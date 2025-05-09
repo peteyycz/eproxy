@@ -5,15 +5,18 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const exe = b.addExecutable(.{
-        .name = "io_uring_example",
+        .name = "eproxy",
         .target = target,
         .optimize = optimize,
     });
 
     // Add the C file
     exe.addCSourceFile(.{
-        .file = b.path("io_uring_example.c"),
-        .flags = &[_][]const u8{"-std=c11"},
+        .file = b.path("main.c"),
+        .flags = &[_][]const u8{
+            "-std=c11",
+            "-D_GNU_SOURCE",
+        },
     });
 
     // Link with C standard library
