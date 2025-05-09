@@ -1,4 +1,3 @@
-#include <bits/types/struct_iovec.h>
 #include <fcntl.h>
 #include <liburing/io_uring.h>
 #include <stdio.h>
@@ -10,14 +9,13 @@
 #include <liburing.h>
 
 #define QUEUE_DEPTH 2
-#define BLOCK_SIZE_ 1024 * 4
+#define CUSTOM_BLOCK_SIZE 1024 * 4
 
 int main(int argc, char *argv[]) {
   struct io_uring ring;
-  char buffer[BLOCK_SIZE_];
+  char buffer[CUSTOM_BLOCK_SIZE];
   int fd;
   int ret;
-  struct iovec iov;
   struct io_uring_sqe *sqe;
   struct io_uring_cqe *cqe;
   ssize_t bytes_read_total = 0;
@@ -54,11 +52,7 @@ int main(int argc, char *argv[]) {
       return EXIT_ERROR;
     }
 
-    iov.iov_base = buffer;
-    iov.iov_len = BLOCK_SIZE_;
-
-    // io_uring_prep_read(sqe, fd, buffer, 1, offset);
-    io_uring_prep_readv(sqe, fd, &iov, 1, offset);
+    io_uring_prep_read(sqe, fd, buffer, 1, offset);
 
     ret = io_uring_submit(&ring);
     if (ret < 0) {
