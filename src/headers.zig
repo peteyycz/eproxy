@@ -94,31 +94,48 @@ pub const ParsedHeaders = struct {
         }
         return null;
     }
+    
+    // Comptime header getter generator
+    pub fn getHeader(self: *const @This(), comptime header_name: []const u8) ?[]const u8 {
+        // Generate lowercase version at compile time as a constant
+        const lowercase_name = comptime blk: {
+            var result: [header_name.len]u8 = undefined;
+            for (header_name, 0..) |char, i| {
+                result[i] = std.ascii.toLower(char);
+            }
+            break :blk result;
+        };
+        
+        if (self.map.get(&lowercase_name)) |value| {
+            return std.mem.trim(u8, value, " \t");
+        }
+        return null;
+    }
 
     pub fn getContentLength(self: *const @This()) usize {
-        if (self.get("Content-Length")) |value| {
+        if (self.getHeader("Content-Length")) |value| {
             return std.fmt.parseInt(usize, value, 10) catch 0;
         }
         return 0;
     }
 
     pub fn shouldCloseConnection(self: *const @This()) bool {
-        if (self.get("Connection")) |value| {
+        if (self.getHeader("Connection")) |value| {
             return std.ascii.eqlIgnoreCase(value, "close");
         }
         return false;
     }
 
     pub fn getHost(self: *const @This()) ?[]const u8 {
-        return self.get("Host");
+        return self.getHeader("Host");
     }
 
     pub fn getUserAgent(self: *const @This()) ?[]const u8 {
-        return self.get("User-Agent");
+        return self.getHeader("User-Agent");
     }
 
     pub fn getContentType(self: *const @This()) ?[]const u8 {
-        return self.get("Content-Type");
+        return self.getHeader("Content-Type");
     }
 };
 
