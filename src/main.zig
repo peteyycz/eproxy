@@ -3,6 +3,7 @@ const net = std.net;
 const log = std.log;
 const headers = @import("headers.zig");
 const build_options = @import("build_options");
+const xev = @import("xev");
 
 pub const std_options: std.Options = .{
     .log_level = @enumFromInt(@intFromEnum(build_options.log_level)),
@@ -17,30 +18,36 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const address = try net.Address.parseIp("127.0.0.1", LISTEN_PORT);
-    var server = try address.listen(.{
-        .reuse_address = true,
+    // Initialize thread pool and event loop
+    var thread_pool = xev.ThreadPool.init(.{ .max_threads = 4 });
+    defer thread_pool.deinit();
+
+    var loop = try xev.Loop.init(.{
+        .thread_pool = &thread_pool,
     });
-    defer server.deinit();
+    defer loop.deinit();
+
+    // Bind to address
+    const addr = try std.net.Address.parseIp("127.0.0.1", LISTEN_PORT);
+
+    // Create libxev TCP server with address
+    var server = try xev.TCP.init(addr);
+    try server.bind(addr);
+    try server.listen(128); // backlog
 
     log.info("Reverse proxy listening on http://127.0.0.1:{}", .{LISTEN_PORT});
     log.info("Proxying requests to {s}:{}", .{ PROXY_HOST, PROXY_PORT });
+    log.info("Server socket bound and listening, starting accept...", .{});
 
-    while (true) {
-        const connection = server.accept() catch |err| {
-            log.err("Failed to accept connection: {}", .{err});
-            continue;
-        };
+    // Start accepting connections asynchronously
+    var accept_ctx = AcceptContext{ .allocator = allocator };
+    var accept_completion: xev.Completion = undefined;
+    server.accept(&loop, &accept_completion, AcceptContext, &accept_ctx, acceptCallback);
 
-        log.debug("Accepted connection from {}", .{connection.address});
-
-        var arena = std.heap.ArenaAllocator.init(allocator);
-        defer arena.deinit();
-
-        handleRequest(arena.allocator(), connection) catch |err| {
-            log.err("Error handling request: {}", .{err});
-        };
-    }
+    // Run event loop
+    log.info("Starting event loop...", .{});
+    try loop.run(.until_done);
+    log.info("Event loop exited", .{});
 }
 
 fn handleRequest(allocator: std.mem.Allocator, client_connection: net.Server.Connection) !void {
@@ -156,4 +163,211 @@ fn handleRequest(allocator: std.mem.Allocator, client_connection: net.Server.Con
             _ = try client_connection.stream.writeAll(response_buffer[0..response_bytes]);
         }
     }
+}
+
+const AcceptContext = struct {
+    allocator: std.mem.Allocator,
+};
+
+const ClientContext = struct {
+    client: xev.TCP,
+    read_completion: xev.Completion,
+    write_completion: xev.Completion,
+    shutdown_completion: xev.Completion,
+    close_completion: xev.Completion,
+    request_buffer: [4096]u8,
+    allocator: std.mem.Allocator,
+
+    fn init(allocator: std.mem.Allocator, client: xev.TCP) !*ClientContext {
+        const ctx = try allocator.create(ClientContext);
+        ctx.* = ClientContext{
+            .client = client,
+            .read_completion = undefined,
+            .write_completion = undefined,
+            .shutdown_completion = undefined,
+            .close_completion = undefined,
+            .request_buffer = undefined,
+            .allocator = allocator,
+        };
+        return ctx;
+    }
+
+    fn deinit(self: *ClientContext) void {
+        self.allocator.destroy(self);
+    }
+};
+
+fn acceptCallback(
+    userdata: ?*AcceptContext,
+    loop: *xev.Loop,
+    completion: *xev.Completion,
+    result: xev.AcceptError!xev.TCP,
+) xev.CallbackAction {
+    _ = completion;
+
+    const accept_ctx = userdata orelse {
+        log.err("Missing accept context", .{});
+        return .rearm;
+    };
+
+    const client = result catch |err| {
+        log.err("Failed to accept connection: {}", .{err});
+        return .rearm; // Continue accepting
+    };
+
+    log.debug("Accepted connection", .{});
+
+    // Create context to keep completions alive
+    const ctx = ClientContext.init(accept_ctx.allocator, client) catch |err| {
+        log.err("Failed to allocate client context: {}", .{err});
+        return .rearm;
+    };
+
+    // First, read the HTTP request
+    log.debug("Reading HTTP request...", .{});
+    client.read(loop, &ctx.read_completion, .{ .slice = &ctx.request_buffer }, ClientContext, ctx, readCallback);
+
+    return .rearm; // Continue accepting more connections
+}
+
+fn readCallback(
+    ctx_opt: ?*ClientContext,
+    loop: *xev.Loop,
+    completion: *xev.Completion,
+    socket: xev.TCP,
+    buffer: xev.ReadBuffer,
+    result: xev.ReadError!usize,
+) xev.CallbackAction {
+    _ = completion;
+    _ = buffer;
+
+    const ctx = ctx_opt orelse {
+        log.err("Missing client context in read callback", .{});
+        return .disarm;
+    };
+
+    const bytes_read = result catch |err| {
+        log.err("Failed to read from client: {}", .{err});
+        socket.close(loop, &ctx.close_completion, ClientContext, ctx, clientCloseCallback);
+        return .disarm;
+    };
+
+    log.debug("Read {} bytes from client", .{bytes_read});
+
+    // Check if client closed connection (0 bytes = EOF)
+    if (bytes_read == 0) {
+        log.debug("Client closed connection (0 bytes read)", .{});
+        socket.close(loop, &ctx.close_completion, ClientContext, ctx, clientCloseCallback);
+        return .disarm;
+    }
+
+    // Log the request (first line only)
+    const request_data = ctx.request_buffer[0..bytes_read];
+    if (std.mem.indexOf(u8, request_data, "\r\n")) |end| {
+        log.debug("HTTP Request: {s}", .{request_data[0..end]});
+    } else {
+        log.debug("HTTP Request (no CRLF found): {s}", .{request_data[0..@min(100, bytes_read)]});
+    }
+
+    // Send a proper HTTP/1.1 response with correct Content-Length
+    const body = "Hello from libxev proxy!";
+    // body.len = 24, which matches our Content-Length header
+    const response =
+        "HTTP/1.1 200 OK\r\n" ++
+        "Content-Type: text/plain\r\n" ++
+        "Content-Length: 24\r\n" ++
+        "Connection: close\r\n" ++
+        "Server: libxev-proxy/1.0\r\n" ++
+        "\r\n" ++
+        body;
+
+    socket.write(loop, &ctx.write_completion, .{ .slice = response }, ClientContext, ctx, writeCallback);
+
+    return .disarm;
+}
+
+fn writeCallback(
+    ctx_opt: ?*ClientContext,
+    loop: *xev.Loop,
+    completion: *xev.Completion,
+    socket: xev.TCP,
+    buffer: xev.WriteBuffer,
+    result: xev.WriteError!usize,
+) xev.CallbackAction {
+    _ = completion;
+    _ = buffer;
+
+    const ctx = ctx_opt orelse {
+        log.err("Missing client context in write callback", .{});
+        return .disarm;
+    };
+
+    const bytes_written = result catch |err| {
+        log.err("Failed to write to client: {}", .{err});
+        socket.close(loop, &ctx.close_completion, ClientContext, ctx, clientCloseCallback);
+        return .disarm;
+    };
+
+    log.debug("Wrote {} bytes to client", .{bytes_written});
+
+    // Shutdown write side to signal end of response
+    log.debug("Shutting down write side", .{});
+    socket.shutdown(loop, &ctx.shutdown_completion, ClientContext, ctx, shutdownCallback);
+
+    return .disarm;
+}
+
+fn shutdownCallback(
+    ctx_opt: ?*ClientContext,
+    loop: *xev.Loop,
+    completion: *xev.Completion,
+    socket: xev.TCP,
+    result: xev.ShutdownError!void,
+) xev.CallbackAction {
+    _ = completion;
+
+    const ctx = ctx_opt orelse {
+        log.err("Missing client context in shutdown callback", .{});
+        return .disarm;
+    };
+
+    result catch |err| {
+        log.err("Failed to shutdown client: {}", .{err});
+        // Still proceed to close
+    };
+
+    log.debug("Write side shutdown complete, closing socket", .{});
+
+    // Now close the socket
+    socket.close(loop, &ctx.close_completion, ClientContext, ctx, clientCloseCallback);
+
+    return .disarm;
+}
+
+fn clientCloseCallback(
+    ctx_opt: ?*ClientContext,
+    loop: *xev.Loop,
+    completion: *xev.Completion,
+    socket: xev.TCP,
+    result: xev.CloseError!void,
+) xev.CallbackAction {
+    _ = loop;
+    _ = completion;
+    _ = socket;
+
+    const ctx = ctx_opt orelse {
+        log.err("Missing client context in close callback", .{});
+        return .disarm;
+    };
+
+    result catch |err| {
+        log.err("Failed to close client: {}", .{err});
+    };
+
+    log.debug("Client connection closed", .{});
+
+    // Clean up the context
+    ctx.deinit();
+
+    return .disarm;
 }
