@@ -7,7 +7,7 @@ const HEADER_SIZE_LIMIT = 16384; // 16KB
 
 pub const HeaderMap = std.StringArrayHashMap([]const u8);
 
-pub const HeaderReadResult = struct {
+pub const ReadHeaderReadResult = struct {
     headers: []const u8,
     body_overshoot: []const u8,
     allocator: std.mem.Allocator,
@@ -29,7 +29,7 @@ const CRLF = "\r\n";
 const HEADER_LINE_SEPARATOR = CRLF;
 const HEADER_BODY_SEPARATOR = CRLF ++ CRLF;
 
-pub fn readHeaders(allocator: std.mem.Allocator, stream: net.Stream) !HeaderReadResult {
+pub fn read(allocator: std.mem.Allocator, stream: net.Stream) !ReadHeaderReadResult {
     var buffer = std.ArrayList(u8).init(allocator);
     var headers_complete = false;
     var chunk_buffer: [CHUNK_SIZE]u8 = undefined;
@@ -58,7 +58,7 @@ pub fn readHeaders(allocator: std.mem.Allocator, stream: net.Stream) !HeaderRead
     // Transfer ownership of the buffer to the result
     const owned_buffer = try buffer.toOwnedSlice();
 
-    return HeaderReadResult{
+    return ReadHeaderReadResult{
         .headers = owned_buffer[0..headers_end_pos],
         .body_overshoot = owned_buffer[headers_end_pos..],
         .allocator = allocator,
@@ -66,7 +66,7 @@ pub fn readHeaders(allocator: std.mem.Allocator, stream: net.Stream) !HeaderRead
     };
 }
 
-pub const ParsedHeaders = struct {
+pub const Headers = struct {
     map: HeaderMap,
     allocator: std.mem.Allocator,
 
@@ -79,22 +79,6 @@ pub const ParsedHeaders = struct {
         self.map.deinit();
     }
 
-    pub fn get(self: *const @This(), name: []const u8) ?[]const u8 {
-        // Create lowercase version of the requested header name
-        var lowercase_buffer: [256]u8 = undefined;
-        if (name.len > lowercase_buffer.len) return null;
-
-        for (name, 0..) |char, i| {
-            lowercase_buffer[i] = std.ascii.toLower(char);
-        }
-
-        if (self.map.get(lowercase_buffer[0..name.len])) |value| {
-            // Trim whitespace from the value when returning for parsing purposes
-            return std.mem.trim(u8, value, " \t");
-        }
-        return null;
-    }
-    
     // Comptime header getter generator
     pub fn getHeader(self: *const @This(), comptime header_name: []const u8) ?[]const u8 {
         // Generate lowercase version at compile time as a constant
@@ -105,7 +89,7 @@ pub const ParsedHeaders = struct {
             }
             break :blk result;
         };
-        
+
         if (self.map.get(&lowercase_name)) |value| {
             return std.mem.trim(u8, value, " \t");
         }
@@ -139,7 +123,7 @@ pub const ParsedHeaders = struct {
     }
 };
 
-pub fn parseHeaderMap(allocator: std.mem.Allocator, headers: []const u8) !ParsedHeaders {
+pub fn parse(allocator: std.mem.Allocator, headers: []const u8) !Headers {
     var header_map = HeaderMap.init(allocator);
     var lines = std.mem.splitSequence(u8, headers, HEADER_LINE_SEPARATOR);
 
@@ -164,7 +148,7 @@ pub fn parseHeaderMap(allocator: std.mem.Allocator, headers: []const u8) !Parsed
         }
     }
 
-    return ParsedHeaders{
+    return Headers{
         .map = header_map,
         .allocator = allocator,
     };

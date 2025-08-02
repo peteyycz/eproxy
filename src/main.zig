@@ -47,48 +47,48 @@ fn handleRequest(allocator: std.mem.Allocator, client_connection: net.Server.Con
 
     print("Starting to read headers...\n", .{});
     // Read headers using the refactored function
-    const header_result = headers.readHeaders(allocator, client_connection.stream) catch |err| {
+    const header_result = headers.read(allocator, client_connection.stream) catch |err| {
         print("Failed to read headers: {}\n", .{err});
         return;
     };
     defer header_result.deinit();
     print("Headers read successfully\n", .{});
 
-    const request_headers = header_result.headers;
+    const raw_request_headers = header_result.headers;
     const body_already_read = header_result.body_overshoot;
 
     // Parse request headers into a map
-    var request_header_map = headers.parseHeaderMap(allocator, request_headers) catch |err| {
+    var request_headers = headers.parse(allocator, raw_request_headers) catch |err| {
         print("Failed to parse request headers: {}\n", .{err});
         return;
     };
-    defer request_header_map.deinit();
+    defer request_headers.deinit();
 
     // Parse Content-Length from headers
-    const content_length = request_header_map.getContentLength();
+    const content_length = request_headers.getContentLength();
 
     // Allocate buffer for complete request
-    const total_size = request_headers.len + content_length;
+    const total_size = raw_request_headers.len + content_length;
     const request_buffer = try allocator.alloc(u8, total_size);
     defer allocator.free(request_buffer);
 
     // Copy headers
-    @memcpy(request_buffer[0..request_headers.len], request_headers);
+    @memcpy(request_buffer[0..raw_request_headers.len], raw_request_headers);
 
     // Copy body data we already read
-    @memcpy(request_buffer[request_headers.len .. request_headers.len + body_already_read.len], body_already_read);
+    @memcpy(request_buffer[raw_request_headers.len .. raw_request_headers.len + body_already_read.len], body_already_read);
 
     // TODO: Read the rest of the body in chunks instead of all at once, better yet start streaming
     if (content_length > 0) {
         var body_pos = body_already_read.len;
         while (body_pos < content_length) {
-            const bytes_read = try client_connection.stream.read(request_buffer[request_headers.len + body_pos ..]);
+            const bytes_read = try client_connection.stream.read(request_buffer[raw_request_headers.len + body_pos ..]);
             if (bytes_read == 0) break;
             body_pos += bytes_read;
         }
     }
 
-    print("Proxying request ({} bytes: {} headers + {} body, {} pre-read)\n", .{ total_size, request_headers.len, content_length, body_already_read.len });
+    print("Proxying request ({} bytes: {} headers + {} body, {} pre-read)\n", .{ total_size, raw_request_headers.len, content_length, body_already_read.len });
 
     print("Attempting to connect to {s}:{}\n", .{ PROXY_HOST, PROXY_PORT });
     const target_connection = net.tcpConnectToHost(allocator, PROXY_HOST, PROXY_PORT) catch |err| {
@@ -112,7 +112,7 @@ fn handleRequest(allocator: std.mem.Allocator, client_connection: net.Server.Con
     print("Request sent, reading response headers\n", .{});
 
     // Read response headers first
-    const response_header_result = headers.readHeaders(allocator, target_connection) catch |err| {
+    const response_header_result = headers.read(allocator, target_connection) catch |err| {
         print("Failed to read response headers: {}\n", .{err});
         return;
     };
@@ -129,17 +129,16 @@ fn handleRequest(allocator: std.mem.Allocator, client_connection: net.Server.Con
     }
 
     // Parse response headers into a map
-    var response_header_map = headers.parseHeaderMap(allocator, response_header_result.headers) catch |err| {
+    var response_headers = headers.parse(allocator, response_header_result.headers) catch |err| {
         print("Failed to parse response headers: {}\n", .{err});
         return;
     };
-    defer response_header_map.deinit();
+    defer response_headers.deinit();
 
     // Parse response to determine how to handle body
-    const response_content_length = response_header_map.getContentLength();
-    const should_close = response_header_map.shouldCloseConnection();
+    const response_content_length = response_headers.getContentLength();
 
-    print("Response: Content-Length={}, Connection-Close={}\n", .{ response_content_length, should_close });
+    print("Response: Content-Length={}", .{response_content_length});
 
     // Handle response body based on Content-Length
     if (response_content_length > 0) {
@@ -147,6 +146,7 @@ fn handleRequest(allocator: std.mem.Allocator, client_connection: net.Server.Con
         var remaining = response_content_length - response_header_result.body_overshoot.len;
         var response_buffer: [8192]u8 = undefined;
         while (remaining > 0) {
+            // TODO: Chunked reading
             const to_read = @min(remaining, response_buffer.len);
             const response_bytes = target_connection.read(response_buffer[0..to_read]) catch 0;
             if (response_bytes == 0) break;
