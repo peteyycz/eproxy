@@ -15,6 +15,9 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
+    // Add log level option
+    const log_level = b.option(std.log.Level, "log-level", "Set log level (debug, info, warn, err)") orelse .info;
+
     // This creates a "module", which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.
     // Every executable or library we compile will be based on one or more modules.
@@ -64,6 +67,11 @@ pub fn build(b: *std.Build) void {
         .name = "eproxy",
         .root_module = exe_mod,
     });
+    
+    // Set log level for the executable
+    const options = b.addOptions();
+    options.addOption(std.log.Level, "log_level", log_level);
+    exe_mod.addImport("build_options", options.createModule());
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default

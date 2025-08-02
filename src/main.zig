@@ -1,7 +1,12 @@
 const std = @import("std");
 const net = std.net;
-const print = std.debug.print;
+const log = std.log;
 const headers = @import("headers.zig");
+const build_options = @import("build_options");
+
+pub const std_options: std.Options = .{
+    .log_level = @enumFromInt(@intFromEnum(build_options.log_level)),
+};
 
 const PROXY_HOST = "localhost";
 const PROXY_PORT = 9000;
@@ -18,48 +23,45 @@ pub fn main() !void {
     });
     defer server.deinit();
 
-    print("Reverse proxy listening on http://127.0.0.1:{}\n", .{LISTEN_PORT});
-    print("Proxying requests to {s}:{}\n", .{ PROXY_HOST, PROXY_PORT });
+    log.info("Reverse proxy listening on http://127.0.0.1:{}", .{LISTEN_PORT});
+    log.info("Proxying requests to {s}:{}", .{ PROXY_HOST, PROXY_PORT });
 
     while (true) {
-        print("Waiting for connection...\n", .{});
         const connection = server.accept() catch |err| {
-            print("Failed to accept connection: {}\n", .{err});
+            log.err("Failed to accept connection: {}", .{err});
             continue;
         };
-        print("Accepted connection from {}\n", .{connection.address});
+
+        log.debug("Accepted connection from {}", .{connection.address});
 
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
 
         handleRequest(arena.allocator(), connection) catch |err| {
-            print("Error handling request: {}\n", .{err});
+            log.err("Error handling request: {}", .{err});
         };
-        print("Request completed, ready for next connection\n", .{});
     }
 }
 
 fn handleRequest(allocator: std.mem.Allocator, client_connection: net.Server.Connection) !void {
     defer {
-        print("Closing client connection\n", .{});
+        log.debug("Closing client connection", .{});
         client_connection.stream.close();
     }
 
-    print("Starting to read headers...\n", .{});
     // Read headers using the refactored function
     const header_result = headers.read(allocator, client_connection.stream) catch |err| {
-        print("Failed to read headers: {}\n", .{err});
+        log.err("Failed to read headers: {}", .{err});
         return;
     };
     defer header_result.deinit();
-    print("Headers read successfully\n", .{});
 
     const raw_request_headers = header_result.headers;
     const body_already_read = header_result.body_overshoot;
 
     // Parse request headers into a map
     var request_headers = headers.parse(allocator, raw_request_headers) catch |err| {
-        print("Failed to parse request headers: {}\n", .{err});
+        log.err("Failed to parse request headers: {}", .{err});
         return;
     };
     defer request_headers.deinit();
@@ -88,11 +90,8 @@ fn handleRequest(allocator: std.mem.Allocator, client_connection: net.Server.Con
         }
     }
 
-    print("Proxying request ({} bytes: {} headers + {} body, {} pre-read)\n", .{ total_size, raw_request_headers.len, content_length, body_already_read.len });
-
-    print("Attempting to connect to {s}:{}\n", .{ PROXY_HOST, PROXY_PORT });
     const target_connection = net.tcpConnectToHost(allocator, PROXY_HOST, PROXY_PORT) catch |err| {
-        print("Failed to connect to target server: {}\n", .{err});
+        log.err("Failed to connect to target server: {}", .{err});
         const error_response =
             \\HTTP/1.1 502 Bad Gateway
             \\Content-Type: text/plain
@@ -105,20 +104,15 @@ fn handleRequest(allocator: std.mem.Allocator, client_connection: net.Server.Con
         return;
     };
     defer target_connection.close();
-    print("Connected to target server successfully\n", .{});
 
-    print("Sending request to target ({} bytes)\n", .{request_buffer.len});
     _ = try target_connection.writeAll(request_buffer);
-    print("Request sent, reading response headers\n", .{});
 
     // Read response headers first
     const response_header_result = headers.read(allocator, target_connection) catch |err| {
-        print("Failed to read response headers: {}\n", .{err});
+        log.err("Failed to read response headers: {}", .{err});
         return;
     };
     defer response_header_result.deinit();
-
-    print("Response headers read, forwarding to client\n", .{});
 
     // Forward response headers to client
     _ = try client_connection.stream.writeAll(response_header_result.headers);
@@ -130,15 +124,13 @@ fn handleRequest(allocator: std.mem.Allocator, client_connection: net.Server.Con
 
     // Parse response headers into a map
     var response_headers = headers.parse(allocator, response_header_result.headers) catch |err| {
-        print("Failed to parse response headers: {}\n", .{err});
+        log.err("Failed to parse response headers: {}", .{err});
         return;
     };
     defer response_headers.deinit();
 
     // Parse response to determine how to handle body
     const response_content_length = response_headers.getContentLength();
-
-    print("Response: Content-Length={}", .{response_content_length});
 
     // Handle response body based on Content-Length
     if (response_content_length > 0) {
@@ -153,10 +145,10 @@ fn handleRequest(allocator: std.mem.Allocator, client_connection: net.Server.Con
             _ = try client_connection.stream.writeAll(response_buffer[0..response_bytes]);
             remaining -= response_bytes;
         }
-        print("Response body forwarded ({} bytes)\n", .{response_content_length});
+        log.info("Response body forwarded ({} bytes)", .{response_content_length});
     } else {
         // No content-length, read until connection closes
-        print("No content-length, reading until close\n", .{});
+        log.debug("No content-length, reading until close", .{});
         var response_buffer: [8192]u8 = undefined;
         while (true) {
             const response_bytes = target_connection.read(&response_buffer) catch 0;
