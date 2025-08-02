@@ -50,14 +50,14 @@ pub fn main() !void {
     log.info("Event loop exited", .{});
 }
 
-fn handleRequest(allocator: std.mem.Allocator, client_connection: net.Server.Connection) !void {
+fn handleRequest(arena_allocator: std.mem.Allocator, client_connection: net.Server.Connection) !void {
     defer {
         log.debug("Closing client connection", .{});
         client_connection.stream.close();
     }
 
     // Read headers using the refactored function
-    const header_result = headers.read(allocator, client_connection.stream) catch |err| {
+    const header_result = headers.read(arena_allocator, client_connection.stream) catch |err| {
         log.err("Failed to read headers: {}", .{err});
         return;
     };
@@ -67,7 +67,7 @@ fn handleRequest(allocator: std.mem.Allocator, client_connection: net.Server.Con
     const body_already_read = header_result.body_overshoot;
 
     // Parse request headers into a map
-    var request_headers = headers.parse(allocator, raw_request_headers) catch |err| {
+    var request_headers = headers.parse(arena_allocator, raw_request_headers) catch |err| {
         log.err("Failed to parse request headers: {}", .{err});
         return;
     };
@@ -78,8 +78,7 @@ fn handleRequest(allocator: std.mem.Allocator, client_connection: net.Server.Con
 
     // Allocate buffer for complete request
     const total_size = raw_request_headers.len + content_length;
-    const request_buffer = try allocator.alloc(u8, total_size);
-    defer allocator.free(request_buffer);
+    const request_buffer = try arena_allocator.alloc(u8, total_size);
 
     // Copy headers
     @memcpy(request_buffer[0..raw_request_headers.len], raw_request_headers);
@@ -97,7 +96,7 @@ fn handleRequest(allocator: std.mem.Allocator, client_connection: net.Server.Con
         }
     }
 
-    const target_connection = net.tcpConnectToHost(allocator, PROXY_HOST, PROXY_PORT) catch |err| {
+    const target_connection = net.tcpConnectToHost(arena_allocator, PROXY_HOST, PROXY_PORT) catch |err| {
         log.err("Failed to connect to target server: {}", .{err});
         const error_response =
             \\HTTP/1.1 502 Bad Gateway
@@ -115,7 +114,7 @@ fn handleRequest(allocator: std.mem.Allocator, client_connection: net.Server.Con
     _ = try target_connection.writeAll(request_buffer);
 
     // Read response headers first
-    const response_header_result = headers.read(allocator, target_connection) catch |err| {
+    const response_header_result = headers.read(arena_allocator, target_connection) catch |err| {
         log.err("Failed to read response headers: {}", .{err});
         return;
     };
@@ -130,7 +129,7 @@ fn handleRequest(allocator: std.mem.Allocator, client_connection: net.Server.Con
     }
 
     // Parse response headers into a map
-    var response_headers = headers.parse(allocator, response_header_result.headers) catch |err| {
+    var response_headers = headers.parse(arena_allocator, response_header_result.headers) catch |err| {
         log.err("Failed to parse response headers: {}", .{err});
         return;
     };
@@ -177,9 +176,13 @@ const ClientContext = struct {
     close_completion: xev.Completion,
     request_buffer: [4096]u8,
     allocator: std.mem.Allocator,
+    arena: std.heap.ArenaAllocator,
+    arena_allocator: std.mem.Allocator,
 
     fn init(allocator: std.mem.Allocator, client: xev.TCP) !*ClientContext {
         const ctx = try allocator.create(ClientContext);
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        const arena_allocator = arena.allocator();
         ctx.* = ClientContext{
             .client = client,
             .read_completion = undefined,
@@ -188,11 +191,14 @@ const ClientContext = struct {
             .close_completion = undefined,
             .request_buffer = undefined,
             .allocator = allocator,
+            .arena = arena,
+            .arena_allocator = arena_allocator,
         };
         return ctx;
     }
 
     fn deinit(self: *ClientContext) void {
+        self.arena.deinit();
         self.allocator.destroy(self);
     }
 };
