@@ -56,6 +56,29 @@ const ReadingState = enum {
     processing_complete,
 };
 
+const RequestReader = struct {
+    reading_state: ReadingState,
+    headers_buffer: std.ArrayList(u8),
+    body_bytes_remaining: usize,
+    parsed_headers: ?headers.Headers,
+
+    fn init(arena_allocator: std.mem.Allocator) RequestReader {
+        return RequestReader{
+            .reading_state = .reading_headers,
+            .headers_buffer = std.ArrayList(u8).init(arena_allocator),
+            .body_bytes_remaining = 0,
+            .parsed_headers = null,
+        };
+    }
+
+    fn deinit(self: *RequestReader) void {
+        self.headers_buffer.deinit();
+        if (self.parsed_headers) |*parsed| {
+            parsed.deinit();
+        }
+    }
+};
+
 const AcceptContext = struct {
     allocator: std.mem.Allocator,
 };
@@ -73,11 +96,8 @@ const ClientContext = struct {
     arena: std.heap.ArenaAllocator,
     arena_allocator: std.mem.Allocator,
 
-    // State machine fields
-    reading_state: ReadingState,
-    headers_buffer: std.ArrayList(u8),
-    body_bytes_remaining: usize,
-    parsed_headers: ?headers.Headers,
+    // Request reading state machine
+    reader: RequestReader,
 
     fn init(allocator: std.mem.Allocator, client: xev.TCP) !*ClientContext {
         const ctx = try allocator.create(ClientContext);
@@ -91,17 +111,14 @@ const ClientContext = struct {
             .allocator = allocator,
             .arena = std.heap.ArenaAllocator.init(allocator),
             .arena_allocator = undefined,
-            .reading_state = .reading_headers,
-            .headers_buffer = undefined,
-            .body_bytes_remaining = 0,
-            .parsed_headers = null,
+            .reader = undefined,
         };
 
         // Initialize arena_allocator after arena is in its final location
         ctx.arena_allocator = ctx.arena.allocator();
 
-        // Initialize headers_buffer with the properly located arena allocator
-        ctx.headers_buffer = std.ArrayList(u8).init(ctx.arena_allocator);
+        // Initialize reader with the properly located arena allocator
+        ctx.reader = RequestReader.init(ctx.arena_allocator);
 
         return ctx;
     }
@@ -180,12 +197,13 @@ fn readCallback(
     // State machine for handling chunked request reading
     const request_data = ctx.request_buffer[0..bytes_read];
 
-    switch (ctx.reading_state) {
+    switch (ctx.reader.reading_state) {
         .reading_headers => return handleHeadersReading(ctx, loop, socket, request_data),
         .reading_body => return handleBodyReading(ctx, loop, socket, request_data, bytes_read),
         .processing_complete => return handleProcessingComplete(ctx, loop, socket),
     }
 
+    // Should not reach here
     return .disarm;
 }
 
@@ -197,43 +215,48 @@ fn closeWithError(ctx: *ClientContext, loop: *xev.Loop, socket: xev.TCP, comptim
 
 fn handleHeadersReading(ctx: *ClientContext, loop: *xev.Loop, socket: xev.TCP, request_data: []const u8) xev.CallbackAction {
     // Append data to headers buffer
-    ctx.headers_buffer.appendSlice(request_data) catch |err| {
+    ctx.reader.headers_buffer.appendSlice(request_data) catch |err| {
         return closeWithError(ctx, loop, socket, "Failed to append to headers buffer: {}", .{err});
     };
 
     // Look for end of headers (\r\n\r\n)
-    if (std.mem.indexOf(u8, ctx.headers_buffer.items, "\r\n\r\n")) |headers_end| {
+    if (std.mem.indexOf(u8, ctx.reader.headers_buffer.items, "\r\n\r\n")) |headers_end| {
         log.debug("Headers complete, parsing...", .{});
 
         // Parse and store headers
-        const headers_text = ctx.headers_buffer.items[0 .. headers_end + 4];
-        ctx.parsed_headers = headers.parse(ctx.arena_allocator, headers_text) catch |err| {
+        const headers_text = ctx.reader.headers_buffer.items[0 .. headers_end + 4];
+        ctx.reader.parsed_headers = headers.parse(ctx.arena_allocator, headers_text) catch |err| {
             return closeWithError(ctx, loop, socket, "Failed to parse headers: {}", .{err});
         };
 
-        const content_length = ctx.parsed_headers.?.getContentLength();
-        ctx.body_bytes_remaining = content_length;
+        const content_length = if (ctx.reader.parsed_headers) |parsed|
+            parsed.getContentLength()
+        else {
+            return closeWithError(ctx, loop, socket, "Headers parsing failed - no parsed headers available", .{});
+        };
+
+        ctx.reader.body_bytes_remaining = content_length;
 
         log.debug("Content-Length: {}", .{content_length});
 
         if (content_length == 0) {
             // No body, process request immediately
-            ctx.reading_state = .processing_complete;
+            ctx.reader.reading_state = .processing_complete;
             return processRequest(ctx, loop, socket);
         } else {
             // Has body, transition to reading body
-            ctx.reading_state = .reading_body;
+            ctx.reader.reading_state = .reading_body;
 
             // Check if we already have some body data after headers
             const body_start = headers_end + 4;
-            if (ctx.headers_buffer.items.len > body_start) {
-                const body_data = ctx.headers_buffer.items[body_start..];
-                ctx.body_bytes_remaining -= body_data.len;
-                log.debug("Already have {} body bytes, remaining: {}", .{ body_data.len, ctx.body_bytes_remaining });
+            if (ctx.reader.headers_buffer.items.len > body_start) {
+                const body_data = ctx.reader.headers_buffer.items[body_start..];
+                ctx.reader.body_bytes_remaining -= body_data.len;
+                log.debug("Already have {} body bytes, remaining: {}", .{ body_data.len, ctx.reader.body_bytes_remaining });
 
-                if (ctx.body_bytes_remaining == 0) {
+                if (ctx.reader.body_bytes_remaining == 0) {
                     // Complete request received
-                    ctx.reading_state = .processing_complete;
+                    ctx.reader.reading_state = .processing_complete;
                     return processRequest(ctx, loop, socket);
                 }
             }
@@ -247,16 +270,16 @@ fn handleHeadersReading(ctx: *ClientContext, loop: *xev.Loop, socket: xev.TCP, r
 
 fn handleBodyReading(ctx: *ClientContext, loop: *xev.Loop, socket: xev.TCP, request_data: []const u8, bytes_read: usize) xev.CallbackAction {
     // Append body data
-    ctx.headers_buffer.appendSlice(request_data) catch |err| {
+    ctx.reader.headers_buffer.appendSlice(request_data) catch |err| {
         return closeWithError(ctx, loop, socket, "Failed to append body data: {}", .{err});
     };
 
-    ctx.body_bytes_remaining -= bytes_read;
-    log.debug("Body bytes remaining: {}", .{ctx.body_bytes_remaining});
+    ctx.reader.body_bytes_remaining -= bytes_read;
+    log.debug("Body bytes remaining: {}", .{ctx.reader.body_bytes_remaining});
 
-    if (ctx.body_bytes_remaining == 0) {
+    if (ctx.reader.body_bytes_remaining == 0) {
         // Complete request received
-        ctx.reading_state = .processing_complete;
+        ctx.reader.reading_state = .processing_complete;
         return processRequest(ctx, loop, socket);
     }
 
@@ -282,9 +305,9 @@ fn buildSimpleResponse() []const u8 {
 }
 
 fn processRequest(ctx: *ClientContext, loop: *xev.Loop, socket: xev.TCP) xev.CallbackAction {
-    log.debug("Processing complete request ({} total bytes)", .{ctx.headers_buffer.items.len});
+    log.debug("Processing complete request ({} total bytes)", .{ctx.reader.headers_buffer.items.len});
 
-    if (ctx.parsed_headers) |parsed| {
+    if (ctx.reader.parsed_headers) |parsed| {
         log.debug("Host: {s}", .{parsed.getHost() orelse "unknown"});
         log.debug("User-Agent: {s}", .{parsed.getUserAgent() orelse "unknown"});
         log.debug("Content-Type: {s}", .{parsed.getContentType() orelse "none"});
