@@ -3,7 +3,9 @@
   "permissions": {
     "allow": [
       "Bash(zig build)",
-      "Bash(mv:*)"
+      "Bash(mv:*)",
+      "Bash(ls:*)",
+      "Bash(find:*)"
     ],
     "deny": []
   }
