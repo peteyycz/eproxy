@@ -9,7 +9,8 @@
       "Bash(zig build-exe:*)",
       "Bash(zig build-obj:*)",
       "Bash(zig build:*)",
-      "Bash(timeout:*)"
+      "Bash(timeout:*)",
+      "Bash(mkdir:*)"
     ],
     "deny": []
   }
