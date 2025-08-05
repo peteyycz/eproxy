@@ -8,6 +8,10 @@
 
 EProxy is a **lightning-fast**, **memory-efficient** HTTP proxy server engineered from the ground up in Zig. Built on the high-performance libxev event loop, it delivers **unmatched throughput** and **ultra-low latency** for production workloads.
 
+Don't take anything too seriously, this is a **work in progress** and **not for production use**. It's more of a
+playground for me to learn Zig and libxev, but it might be useful for you if you want to see how to build an HTTP proxy
+server in Zig.
+
 ## ✨ Features
 
 - 🚀 **Blazingly Fast**: Built with Zig's non-zero-cost abstractions and manual memory management
