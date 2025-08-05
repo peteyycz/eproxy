@@ -18,7 +18,6 @@ pub fn build(b: *std.Build) void {
     // Add log level option
     const log_level = b.option(std.log.Level, "log-level", "Set log level (debug, info, warn, err)") orelse .info;
 
-
     // We will also create a module for our other entry point, 'main.zig'.
     const exe_mod = b.createModule(.{
         // `root_source_file` is the Zig "entry point" of the module. If a module
@@ -30,15 +29,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-
-
     // This creates another `std.Build.Step.Compile`, but this one builds an executable
     // rather than a static library.
     const exe = b.addExecutable(.{
         .name = "eproxy",
         .root_module = exe_mod,
     });
-    
+
     // Set log level for the executable
     const options = b.addOptions();
     options.addOption(std.log.Level, "log_level", log_level);
@@ -78,31 +75,6 @@ pub fn build(b: *std.Build) void {
     // This will evaluate the `run` step rather than the default, which is "install".
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
-
-    // Add test server executable
-    const test_server_exe = b.addExecutable(.{
-        .name = "test_server",
-        .root_source_file = b.path("test_server.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    
-    // Add the same options and dependencies as the main executable
-    test_server_exe.root_module.addImport("build_options", options.createModule());
-    test_server_exe.root_module.addImport("xev", libxev.module("xev"));
-    
-    b.installArtifact(test_server_exe);
-    
-    const test_server_run_cmd = b.addRunArtifact(test_server_exe);
-    test_server_run_cmd.step.dependOn(b.getInstallStep());
-    
-    if (b.args) |args| {
-        test_server_run_cmd.addArgs(args);
-    }
-    
-    const test_server_run_step = b.step("run-server", "Run the test HTTP server");
-    test_server_run_step.dependOn(&test_server_run_cmd.step);
-
 
     const exe_unit_tests = b.addTest(.{
         .root_module = exe_mod,

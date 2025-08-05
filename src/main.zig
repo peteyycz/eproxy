@@ -1,7 +1,10 @@
 const std = @import("std");
 const log = std.log;
 const xev = @import("xev");
-const async_http = @import("async_http.zig");
+const http_client = @import("http_client.zig");
+const HttpRequest = @import("http/request.zig").HttpRequest;
+const ResponseWriter = @import("http/response_writer.zig").ResponseWriter;
+const Server = @import("http_server.zig").Server;
 
 // Another example callback for chaining requests
 pub fn main() !void {
@@ -20,9 +23,8 @@ pub fn main() !void {
 
     log.info("Starting async HTTP requests...", .{});
 
-    // Example 1: Simple GET request with callback
-    try async_http.fetchUrl(allocator, &loop, "http://httpbin.org/get", struct {
-        fn handleResponse(err: ?async_http.FetchError, response: ?async_http.HttpResponse) void {
+    try http_client.fetchUrl(allocator, &loop, "http://httpbin.org/get", struct {
+        fn handleResponse(err: ?http_client.FetchError, response: ?http_client.HttpResponse) void {
             if (err) |error_info| {
                 log.err("Request failed: {}", .{error_info});
                 return;
@@ -43,6 +45,44 @@ pub fn main() !void {
             }
         }
     }.handleResponse);
+
+    // Create server
+    var server = Server.init(allocator, &loop, struct {
+        fn handleRequest(request: HttpRequest, response_writer: *ResponseWriter) void {
+            log.info("Received {s} request to {s}", .{ request.method.toString(), request.path });
+
+            if (request.query_string) |qs| {
+                log.info("Query string: {s}", .{qs});
+            }
+
+            // Print headers
+            log.info("Headers:", .{});
+            var header_iter = request.headers.iterator();
+            while (header_iter.next()) |entry| {
+                log.info("  {s}: {s}", .{ entry.key_ptr.*, entry.value_ptr.* });
+            }
+
+            if (request.body.len > 0) {
+                log.info("Body ({d} bytes): {s}", .{ request.body.len, request.body });
+            }
+
+            // Create a simple response based on the path
+            const response_body = if (std.mem.eql(u8, request.path, "/hello"))
+                "Hello, World!"
+            else if (std.mem.eql(u8, request.path, "/"))
+                "Welcome to the HTTP server!"
+            else
+                "Not Found";
+
+            const status_code: u16 = if (std.mem.eql(u8, response_body, "Not Found")) 404 else 200;
+
+            response_writer.writeResponse(status_code, response_body) catch |err| {
+                log.err("Failed to write response: {any}", .{err});
+            };
+        }
+    }.handleRequest);
+    // Start listening
+    try server.listen(8080);
 
     log.info("Requests initiated, running event loop...", .{});
 

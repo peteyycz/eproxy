@@ -1,163 +1,12 @@
 const std = @import("std");
 const xev = @import("xev");
+const HttpMethod = @import("http/method.zig").HttpMethod;
+const HttpResponse = @import("http/response.zig").HttpResponse;
+const HttpRequest = @import("http/request.zig").HttpRequest;
+const ResponseWriter = @import("http/response_writer.zig").ResponseWriter;
 const log = std.log;
 
-pub const HttpMethod = enum {
-    GET,
-    POST,
-    PUT,
-    DELETE,
-    HEAD,
-    OPTIONS,
-    PATCH,
-
-    pub fn fromString(method: []const u8) !HttpMethod {
-        if (std.mem.eql(u8, method, "GET")) return .GET;
-        if (std.mem.eql(u8, method, "POST")) return .POST;
-        if (std.mem.eql(u8, method, "PUT")) return .PUT;
-        if (std.mem.eql(u8, method, "DELETE")) return .DELETE;
-        if (std.mem.eql(u8, method, "HEAD")) return .HEAD;
-        if (std.mem.eql(u8, method, "OPTIONS")) return .OPTIONS;
-        if (std.mem.eql(u8, method, "PATCH")) return .PATCH;
-        return error.UnknownMethod;
-    }
-
-    pub fn toString(self: HttpMethod) []const u8 {
-        return switch (self) {
-            .GET => "GET",
-            .POST => "POST",
-            .PUT => "PUT",
-            .DELETE => "DELETE",
-            .HEAD => "HEAD",
-            .OPTIONS => "OPTIONS",
-            .PATCH => "PATCH",
-        };
-    }
-};
-
-pub const HttpRequest = struct {
-    method: HttpMethod,
-    path: []const u8,
-    query_string: ?[]const u8,
-    version: []const u8, // e.g., "HTTP/1.1"
-    headers: std.StringHashMap([]const u8),
-    body: []const u8,
-    allocator: std.mem.Allocator,
-
-    pub fn deinit(self: *HttpRequest) void {
-        self.headers.deinit();
-        self.allocator.free(self.body);
-        self.allocator.free(self.path);
-        if (self.query_string) |qs| {
-            self.allocator.free(qs);
-        }
-        self.allocator.free(self.version);
-    }
-
-    pub fn getHeader(self: *const HttpRequest, name: []const u8) ?[]const u8 {
-        return self.headers.get(name);
-    }
-};
-
-pub const HttpResponse = struct {
-    status_code: u16,
-    status_text: []const u8,
-    headers: std.StringHashMap([]const u8),
-    body: []const u8,
-    allocator: std.mem.Allocator,
-
-    pub fn init(allocator: std.mem.Allocator, status_code: u16, body: []const u8) !HttpResponse {
-        const status_text = switch (status_code) {
-            200 => "OK",
-            404 => "Not Found",
-            500 => "Internal Server Error",
-            else => "Unknown",
-        };
-
-        var headers = std.StringHashMap([]const u8).init(allocator);
-        try headers.put(try allocator.dupe(u8, "Content-Length"), try std.fmt.allocPrint(allocator, "{d}", .{body.len}));
-        try headers.put(try allocator.dupe(u8, "Content-Type"), try allocator.dupe(u8, "text/plain"));
-
-        return HttpResponse{
-            .status_code = status_code,
-            .status_text = status_text,
-            .headers = headers,
-            .body = try allocator.dupe(u8, body),
-            .allocator = allocator,
-        };
-    }
-
-    pub fn deinit(self: *HttpResponse) void {
-        var iter = self.headers.iterator();
-        while (iter.next()) |entry| {
-            self.allocator.free(entry.key_ptr.*);
-            self.allocator.free(entry.value_ptr.*);
-        }
-        self.headers.deinit();
-        self.allocator.free(self.body);
-    }
-
-    pub fn toBytes(self: *const HttpResponse, allocator: std.mem.Allocator) ![]u8 {
-        var response_parts = std.ArrayList([]const u8).init(allocator);
-        defer response_parts.deinit();
-
-        // Status line
-        const status_line = try std.fmt.allocPrint(allocator, "HTTP/1.1 {d} {s}\r\n", .{ self.status_code, self.status_text });
-        try response_parts.append(status_line);
-
-        // Headers
-        var iter = self.headers.iterator();
-        while (iter.next()) |entry| {
-            const header_line = try std.fmt.allocPrint(allocator, "{s}: {s}\r\n", .{ entry.key_ptr.*, entry.value_ptr.* });
-            try response_parts.append(header_line);
-        }
-
-        // Empty line before body
-        try response_parts.append("\r\n");
-        
-        // Body
-        try response_parts.append(self.body);
-
-        // Concatenate all parts
-        var total_len: usize = 0;
-        for (response_parts.items) |part| {
-            total_len += part.len;
-        }
-
-        const result = try allocator.alloc(u8, total_len);
-        var pos: usize = 0;
-        for (response_parts.items) |part| {
-            @memcpy(result[pos..pos + part.len], part);
-            pos += part.len;
-        }
-
-        return result;
-    }
-};
-
 pub const HandlerCallback = *const fn (request: HttpRequest, response_writer: *ResponseWriter) void;
-
-pub const ResponseWriter = struct {
-    allocator: std.mem.Allocator,
-    response: ?HttpResponse,
-
-    pub fn init(allocator: std.mem.Allocator) ResponseWriter {
-        return ResponseWriter{
-            .allocator = allocator,
-            .response = null,
-        };
-    }
-
-    pub fn writeResponse(self: *ResponseWriter, status_code: u16, body: []const u8) !void {
-        self.response = try HttpResponse.init(self.allocator, status_code, body);
-    }
-
-    pub fn deinit(self: *ResponseWriter) void {
-        if (self.response) |*resp| {
-            resp.deinit();
-        }
-    }
-};
 
 const ConnectionContext = struct {
     socket: xev.TCP,
@@ -165,18 +14,18 @@ const ConnectionContext = struct {
     allocator: std.mem.Allocator,
     arena: std.heap.ArenaAllocator,
     arena_allocator: std.mem.Allocator,
-    
+
     // I/O state
     read_completion: xev.Completion,
     write_completion: xev.Completion,
     close_completion: xev.Completion,
-    
+
     // Request parsing state
     request_buffer: std.ArrayList(u8),
     headers_complete: bool,
     content_length: usize,
     bytes_read: usize,
-    
+
     pub fn init(allocator: std.mem.Allocator, socket: xev.TCP, server: *Server) !*ConnectionContext {
         const ctx = try allocator.create(ConnectionContext);
         ctx.* = ConnectionContext{
@@ -193,17 +42,20 @@ const ConnectionContext = struct {
             .content_length = 0,
             .bytes_read = 0,
         };
-        
+
         ctx.arena_allocator = ctx.arena.allocator();
         return ctx;
     }
-    
+
     pub fn deinit(self: *ConnectionContext) void {
         self.request_buffer.deinit();
         self.arena.deinit();
         self.allocator.destroy(self);
     }
 };
+
+const CRLF = "\r\n";
+const HEADERS_END_MARKER = CRLF ++ CRLF;
 
 pub const Server = struct {
     loop: *xev.Loop,
@@ -330,18 +182,17 @@ pub const Server = struct {
 
     fn tryParseRequest(ctx: *ConnectionContext) !HttpRequest {
         const request_data = ctx.request_buffer.items;
-        
+
         // Look for end of headers
-        const headers_end_marker = "\r\n\r\n";
-        const headers_end = std.mem.indexOf(u8, request_data, headers_end_marker) orelse {
+        const headers_end = std.mem.indexOf(u8, request_data, HEADERS_END_MARKER) orelse {
             return error.IncompleteRequest;
         };
 
         const headers_section = request_data[0..headers_end];
-        const body_start = headers_end + headers_end_marker.len;
+        const body_start = headers_end + HEADERS_END_MARKER.len;
 
         // Parse request line and headers
-        var lines = std.mem.splitSequence(u8, headers_section, "\r\n");
+        var lines = std.mem.splitSequence(u8, headers_section, CRLF);
         const request_line = lines.next() orelse return error.InvalidRequest;
 
         // Parse request line: "METHOD /path HTTP/1.1"
@@ -355,10 +206,10 @@ pub const Server = struct {
         // Parse URI into path and query string
         var path: []const u8 = undefined;
         var query_string: ?[]const u8 = null;
-        
+
         if (std.mem.indexOf(u8, uri, "?")) |query_start| {
             path = try ctx.arena_allocator.dupe(u8, uri[0..query_start]);
-            query_string = try ctx.arena_allocator.dupe(u8, uri[query_start + 1..]);
+            query_string = try ctx.arena_allocator.dupe(u8, uri[query_start + 1 ..]);
         } else {
             path = try ctx.arena_allocator.dupe(u8, uri);
         }
@@ -368,11 +219,8 @@ pub const Server = struct {
         while (lines.next()) |line| {
             if (std.mem.indexOf(u8, line, ":")) |colon_pos| {
                 const name = std.mem.trim(u8, line[0..colon_pos], " \t");
-                const value = std.mem.trim(u8, line[colon_pos + 1..], " \t");
-                try headers.put(
-                    try ctx.arena_allocator.dupe(u8, name),
-                    try ctx.arena_allocator.dupe(u8, value)
-                );
+                const value = std.mem.trim(u8, line[colon_pos + 1 ..], " \t");
+                try headers.put(try ctx.arena_allocator.dupe(u8, name), try ctx.arena_allocator.dupe(u8, value));
             }
         }
 
@@ -392,7 +240,7 @@ pub const Server = struct {
         }
 
         // Extract body
-        const body = try ctx.arena_allocator.dupe(u8, request_data[body_start..body_start + content_length]);
+        const body = try ctx.arena_allocator.dupe(u8, request_data[body_start .. body_start + content_length]);
 
         return HttpRequest{
             .method = method,

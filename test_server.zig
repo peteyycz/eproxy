@@ -67,4 +67,3 @@ pub fn main() !void {
     // Explicitly shutdown the thread pool
     thread_pool.shutdown();
 }
-
