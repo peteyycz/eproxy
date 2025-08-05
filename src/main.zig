@@ -3,44 +3,7 @@ const log = std.log;
 const xev = @import("xev");
 const async_http = @import("async_http.zig");
 
-// Example callback function - Node.js style with (error, result) signature
-fn handleResponse(err: ?async_http.FetchError, response: ?async_http.HttpResponse) void {
-    if (err) |error_info| {
-        log.err("Request failed: {}", .{error_info});
-        return;
-    }
-
-    if (response) |resp| {
-        log.info("=== HTTP Response ===", .{});
-        log.info("Status: {}", .{resp.status_code});
-        log.info("Body length: {} bytes", .{resp.body.len});
-        log.info("Body preview: {s}", .{resp.body[0..@min(resp.body.len, 200)]});
-
-        // Print some headers
-        var header_iter = resp.headers.iterator();
-        log.info("Headers:", .{});
-        while (header_iter.next()) |entry| {
-            log.info("  {s}: {s}", .{ entry.key_ptr.*, entry.value_ptr.* });
-        }
-    }
-}
-
 // Another example callback for chaining requests
-fn handleFirstResponse(err: ?async_http.FetchError, response: ?async_http.HttpResponse) void {
-    if (err) |error_info| {
-        log.err("First request failed: {}", .{error_info});
-        return;
-    }
-
-    if (response) |resp| {
-        log.info("First request succeeded with status: {}", .{resp.status_code});
-
-        // In a real scenario, you might extract a URL from the first response
-        // and make a second request here, demonstrating callback chaining
-        log.info("Could chain another request here...", .{});
-    }
-}
-
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -58,7 +21,28 @@ pub fn main() !void {
     log.info("Starting async HTTP requests...", .{});
 
     // Example 1: Simple GET request with callback
-    try async_http.fetchUrl(allocator, &loop, "http://httpbin.org/get", handleResponse);
+    try async_http.fetchUrl(allocator, &loop, "http://httpbin.org/get", struct {
+        fn handleResponse(err: ?async_http.FetchError, response: ?async_http.HttpResponse) void {
+            if (err) |error_info| {
+                log.err("Request failed: {}", .{error_info});
+                return;
+            }
+
+            if (response) |resp| {
+                log.info("=== HTTP Response ===", .{});
+                log.info("Status: {}", .{resp.status_code});
+                log.info("Body length: {} bytes", .{resp.body.len});
+                log.info("Body preview: {s}", .{resp.body[0..@min(resp.body.len, 200)]});
+
+                // Print some headers
+                var header_iter = resp.headers.iterator();
+                log.info("Headers:", .{});
+                while (header_iter.next()) |entry| {
+                    log.info("  {s}: {s}", .{ entry.key_ptr.*, entry.value_ptr.* });
+                }
+            }
+        }
+    }.handleResponse);
 
     log.info("Requests initiated, running event loop...", .{});
 
@@ -66,7 +50,7 @@ pub fn main() !void {
     try loop.run(.until_done);
 
     log.info("All requests completed", .{});
-    
+
     // Explicitly shutdown the thread pool
     thread_pool.shutdown();
 }
@@ -90,4 +74,3 @@ pub fn main() !void {
 //         forwardResponseToClient(resp);
 //     }
 // }
-
