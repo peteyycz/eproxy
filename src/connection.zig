@@ -13,6 +13,10 @@ const TerminalSubState = request_reader.TerminalSubState;
 
 pub const CHUNK_SIZE = 4096;
 
+// Backend configuration
+const BACKEND_HOST = "127.0.0.1";
+const BACKEND_PORT = 9000;
+
 pub const ClientContext = struct {
     client: xev.TCP,
     read_completion: xev.Completion,
@@ -27,6 +31,14 @@ pub const ClientContext = struct {
     // Request reading state machine
     reader: RequestReader,
 
+    // Backend connection state
+    backend: ?xev.TCP,
+    backend_connect_completion: xev.Completion,
+    backend_read_completion: xev.Completion,
+    backend_write_completion: xev.Completion,
+    backend_close_completion: xev.Completion,
+    backend_buffer: [CHUNK_SIZE]u8,
+
     pub fn init(allocator: std.mem.Allocator, client: xev.TCP) !*ClientContext {
         const ctx = try allocator.create(ClientContext);
         ctx.* = ClientContext{
@@ -40,6 +52,13 @@ pub const ClientContext = struct {
             .arena = std.heap.ArenaAllocator.init(allocator),
             .arena_allocator = undefined,
             .reader = undefined,
+
+            .backend = null,
+            .backend_connect_completion = undefined,
+            .backend_read_completion = undefined,
+            .backend_write_completion = undefined,
+            .backend_close_completion = undefined,
+            .backend_buffer = undefined,
         };
 
         // Initialize arena_allocator after arena is in its final location
@@ -52,6 +71,10 @@ pub const ClientContext = struct {
     }
 
     pub fn deinit(self: *ClientContext) void {
+        // Close backend connection if open
+        if (self.backend) |_| {
+            // Note: backend socket should already be closed by cleanup logic
+        }
         self.arena.deinit();
         self.allocator.destroy(self);
     }
@@ -208,12 +231,25 @@ fn handleRequestProcessing(ctx: *ClientContext, loop: *xev.Loop, socket: xev.TCP
         log.debug("Content-Length: {}", .{parsed.getContentLength()});
     }
 
-    // For now, send a simple response
-    // TODO: Implement actual proxy logic here using parsed headers
-    const resp = response.buildSimpleResponse();
+    // Connect to backend server
+    const backend_addr = std.net.Address.parseIp(BACKEND_HOST, BACKEND_PORT) catch |err| {
+        log.err("Failed to parse backend address: {}", .{err});
+        const resp = response.buildErrorResponse(502);
+        socket.write(loop, &ctx.write_completion, .{ .slice = resp }, ClientContext, ctx, writeCallback);
+        return .disarm;
+    };
 
-    ctx.reader.transitionTo(.processing, ProcessingSubState.response);
-    socket.write(loop, &ctx.write_completion, .{ .slice = resp }, ClientContext, ctx, writeCallback);
+    const backend_socket = xev.TCP.init(backend_addr) catch |err| {
+        log.err("Failed to create backend TCP socket: {}", .{err});
+        const resp = response.buildErrorResponse(502);
+        socket.write(loop, &ctx.write_completion, .{ .slice = resp }, ClientContext, ctx, writeCallback);
+        return .disarm;
+    };
+
+    ctx.backend = backend_socket;
+
+    log.debug("Connecting to backend server...", .{});
+    backend_socket.connect(loop, &ctx.backend_connect_completion, backend_addr, ClientContext, ctx, backendConnectCallback);
     return .disarm;
 }
 
@@ -315,6 +351,171 @@ pub fn clientCloseCallback(
 
     // Clean up the context
     ctx.deinit();
+
+    return .disarm;
+}
+
+pub fn backendConnectCallback(
+    ctx_opt: ?*ClientContext,
+    loop: *xev.Loop,
+    completion: *xev.Completion,
+    socket: xev.TCP,
+    result: xev.ConnectError!void,
+) xev.CallbackAction {
+    _ = completion;
+
+    const ctx = ctx_opt orelse {
+        log.err("Missing client context in backend connect callback", .{});
+        return .disarm;
+    };
+
+    result catch |err| {
+        log.err("Failed to connect to backend: {}", .{err});
+        const resp = response.buildErrorResponse(502);
+        ctx.client.write(loop, &ctx.write_completion, .{ .slice = resp }, ClientContext, ctx, writeCallback);
+        return .disarm;
+    };
+
+    log.debug("Connected to backend server, forwarding request...", .{});
+
+    // Forward the complete HTTP request to backend
+    const request_data = ctx.reader.headers_buffer.items;
+    socket.write(loop, &ctx.backend_write_completion, .{ .slice = request_data }, ClientContext, ctx, backendWriteCallback);
+
+    return .disarm;
+}
+
+pub fn backendWriteCallback(
+    ctx_opt: ?*ClientContext,
+    loop: *xev.Loop,
+    completion: *xev.Completion,
+    socket: xev.TCP,
+    buffer: xev.WriteBuffer,
+    result: xev.WriteError!usize,
+) xev.CallbackAction {
+    _ = completion;
+    _ = buffer;
+
+    const ctx = ctx_opt orelse {
+        log.err("Missing client context in backend write callback", .{});
+        return .disarm;
+    };
+
+    const bytes_written = result catch |err| {
+        log.err("Failed to write to backend: {}", .{err});
+        const resp = response.buildErrorResponse(502);
+        ctx.client.write(loop, &ctx.write_completion, .{ .slice = resp }, ClientContext, ctx, writeCallback);
+        return .disarm;
+    };
+
+    log.debug("Wrote {} bytes to backend, reading response...", .{bytes_written});
+
+    // Start reading response from backend
+    socket.read(loop, &ctx.backend_read_completion, .{ .slice = &ctx.backend_buffer }, ClientContext, ctx, backendReadCallback);
+
+    return .disarm;
+}
+
+pub fn backendReadCallback(
+    ctx_opt: ?*ClientContext,
+    loop: *xev.Loop,
+    completion: *xev.Completion,
+    socket: xev.TCP,
+    buffer: xev.ReadBuffer,
+    result: xev.ReadError!usize,
+) xev.CallbackAction {
+    _ = completion;
+    _ = buffer;
+
+    const ctx = ctx_opt orelse {
+        log.err("Missing client context in backend read callback", .{});
+        return .disarm;
+    };
+
+    const bytes_read = result catch |err| {
+        log.err("Failed to read from backend: {}", .{err});
+        const resp = response.buildErrorResponse(502);
+        ctx.client.write(loop, &ctx.write_completion, .{ .slice = resp }, ClientContext, ctx, writeCallback);
+        return .disarm;
+    };
+
+    if (bytes_read == 0) {
+        log.debug("Backend closed connection (0 bytes read)", .{});
+        // Close backend connection
+        socket.close(loop, &ctx.backend_close_completion, ClientContext, ctx, backendCloseCallback);
+        return .disarm;
+    }
+
+    log.debug("Read {} bytes from backend, forwarding to client...", .{bytes_read});
+
+    // Forward response chunk to client
+    const response_data = ctx.backend_buffer[0..bytes_read];
+    ctx.client.write(loop, &ctx.write_completion, .{ .slice = response_data }, ClientContext, ctx, clientForwardCallback);
+
+    return .disarm;
+}
+
+pub fn clientForwardCallback(
+    ctx_opt: ?*ClientContext,
+    loop: *xev.Loop,
+    completion: *xev.Completion,
+    socket: xev.TCP,
+    buffer: xev.WriteBuffer,
+    result: xev.WriteError!usize,
+) xev.CallbackAction {
+    _ = completion;
+    _ = buffer;
+    _ = socket;
+
+    const ctx = ctx_opt orelse {
+        log.err("Missing client context in client forward callback", .{});
+        return .disarm;
+    };
+
+    const bytes_written = result catch |err| {
+        log.err("Failed to write to client: {}", .{err});
+        // Close both connections
+        if (ctx.backend) |backend_socket| {
+            backend_socket.close(loop, &ctx.backend_close_completion, ClientContext, ctx, backendCloseCallback);
+        }
+        ctx.client.close(loop, &ctx.close_completion, ClientContext, ctx, clientCloseCallback);
+        return .disarm;
+    };
+
+    log.debug("Forwarded {} bytes to client, continue reading from backend...", .{bytes_written});
+
+    // Continue reading from backend
+    if (ctx.backend) |backend_socket| {
+        backend_socket.read(loop, &ctx.backend_read_completion, .{ .slice = &ctx.backend_buffer }, ClientContext, ctx, backendReadCallback);
+    }
+
+    return .disarm;
+}
+
+pub fn backendCloseCallback(
+    ctx_opt: ?*ClientContext,
+    loop: *xev.Loop,
+    completion: *xev.Completion,
+    socket: xev.TCP,
+    result: xev.CloseError!void,
+) xev.CallbackAction {
+    _ = completion;
+    _ = socket;
+
+    const ctx = ctx_opt orelse {
+        log.err("Missing client context in backend close callback", .{});
+        return .disarm;
+    };
+
+    result catch |err| {
+        log.err("Failed to close backend: {}", .{err});
+    };
+
+    log.debug("Backend connection closed", .{});
+    ctx.backend = null;
+
+    // Close client connection as well
+    ctx.client.close(loop, &ctx.close_completion, ClientContext, ctx, clientCloseCallback);
 
     return .disarm;
 }

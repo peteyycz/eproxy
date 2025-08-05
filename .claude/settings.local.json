@@ -5,7 +5,11 @@
       "Bash(zig build)",
       "Bash(mv:*)",
       "Bash(ls:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(zig build-exe:*)",
+      "Bash(zig build-obj:*)",
+      "Bash(zig build:*)",
+      "Bash(timeout:*)"
     ],
     "deny": []
   }

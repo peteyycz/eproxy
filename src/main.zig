@@ -1,25 +1,53 @@
 const std = @import("std");
-const net = std.net;
 const log = std.log;
-const build_options = @import("build_options");
 const xev = @import("xev");
-const server = @import("server.zig");
+const async_http = @import("async_http.zig");
 
-pub const std_options: std.Options = .{
-    .log_level = @enumFromInt(@intFromEnum(build_options.log_level)),
-};
+// Example callback function - Node.js style with (error, result) signature
+fn handleResponse(err: ?async_http.FetchError, response: ?async_http.HttpResponse) void {
+    if (err) |error_info| {
+        log.err("Request failed: {}", .{error_info});
+        return;
+    }
 
-const PROXY_HOST = "localhost";
-const PROXY_PORT = 9000;
-const LISTEN_PORT = 8080;
+    if (response) |resp| {
+        log.info("=== HTTP Response ===", .{});
+        log.info("Status: {}", .{resp.status_code});
+        log.info("Body length: {} bytes", .{resp.body.len});
+        log.info("Body preview: {s}", .{resp.body[0..@min(resp.body.len, 200)]});
+
+        // Print some headers
+        var header_iter = resp.headers.iterator();
+        log.info("Headers:", .{});
+        while (header_iter.next()) |entry| {
+            log.info("  {s}: {s}", .{ entry.key_ptr.*, entry.value_ptr.* });
+        }
+    }
+}
+
+// Another example callback for chaining requests
+fn handleFirstResponse(err: ?async_http.FetchError, response: ?async_http.HttpResponse) void {
+    if (err) |error_info| {
+        log.err("First request failed: {}", .{error_info});
+        return;
+    }
+
+    if (response) |resp| {
+        log.info("First request succeeded with status: {}", .{resp.status_code});
+
+        // In a real scenario, you might extract a URL from the first response
+        // and make a second request here, demonstrating callback chaining
+        log.info("Could chain another request here...", .{});
+    }
+}
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Initialize thread pool and event loop
-    var thread_pool = xev.ThreadPool.init(.{ .max_threads = 4 });
+    // Initialize libxev event loop
+    var thread_pool = xev.ThreadPool.init(.{ .max_threads = 2 });
     defer thread_pool.deinit();
 
     var loop = try xev.Loop.init(.{
@@ -27,25 +55,39 @@ pub fn main() !void {
     });
     defer loop.deinit();
 
-    // Bind to address
-    const addr = try std.net.Address.parseIp("127.0.0.1", LISTEN_PORT);
+    log.info("Starting async HTTP requests...", .{});
 
-    // Create libxev TCP server with address
-    var tcp_server = try xev.TCP.init(addr);
-    try tcp_server.bind(addr);
-    try tcp_server.listen(128); // backlog
+    // Example 1: Simple GET request with callback
+    try async_http.fetchUrl(allocator, &loop, "http://httpbin.org/get", handleResponse);
 
-    log.info("Reverse proxy listening on http://127.0.0.1:{}", .{LISTEN_PORT});
-    log.info("Proxying requests to {s}:{}", .{ PROXY_HOST, PROXY_PORT });
-    log.info("Server socket bound and listening, starting accept...", .{});
+    log.info("Requests initiated, running event loop...", .{});
 
-    // Start accepting connections asynchronously
-    var accept_ctx = server.AcceptContext{ .allocator = allocator };
-    var accept_completion: xev.Completion = undefined;
-    tcp_server.accept(&loop, &accept_completion, server.AcceptContext, &accept_ctx, server.acceptCallback);
-
-    // Run event loop
-    log.info("Starting event loop...", .{});
+    // Run the event loop to process all async operations
     try loop.run(.until_done);
-    log.info("Event loop exited", .{});
+
+    log.info("All requests completed", .{});
+    
+    // Explicitly shutdown the thread pool
+    thread_pool.shutdown();
 }
+
+// Example of how you might use this in the main proxy application:
+//
+// fn proxyRequestToBackend(request_data: []const u8) void {
+//     // Instead of direct TCP connection, use the async HTTP interface
+//     async_http.fetchUrl(allocator, &loop, "http://backend-server/api", handleProxyResponse);
+// }
+//
+// fn handleProxyResponse(err: ?async_http.FetchError, response: ?async_http.HttpResponse) void {
+//     if (err) |error_info| {
+//         // Send 502 Bad Gateway to client
+//         sendErrorToClient(502);
+//         return;
+//     }
+//
+//     if (response) |resp| {
+//         // Forward the response back to the client
+//         forwardResponseToClient(resp);
+//     }
+// }
+

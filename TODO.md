@@ -5,18 +5,17 @@
 - [ ] **Single-threaded blocking architecture** - Each request blocks the entire server. One slow client kills throughput.
 - [ ] **Memory inefficiency** - We're buffering entire requests in memory. A 1GB POST request = 1GB RAM per connection.
 - [ ] **No connection pooling** - Creating new TCP connections to backend for every request adds significant latency.
-- [ ] **Synchronous I/O** - No async/await or event loop. Can't handle concurrent connections efficiently.
+- [x] **Synchronous I/O** - No async/await or event loop. Can't handle concurrent connections efficiently.
 
 ## Reliability & Error Handling (P1 - High Priority)
 
 - [ ] **No timeouts** - Malicious clients can hold connections indefinitely
 - [ ] **No request size limits** - `content_length` parsing has no bounds checking
-- [ ] **Poor error propagation** - Generic error handling loses context
+- [x] **Poor error propagation** - Generic error handling loses context
 - [ ] **No graceful shutdown** - Server can't drain connections cleanly
 
 ## Performance Bottlenecks (P2 - Medium Priority)
 
-- [ ] **Arena allocator per request** - Wasteful for simple forwarding
 - [ ] **Multiple memory copies** - Headers copied 2-3 times unnecessarily
 - [ ] **No streaming** - Should pipe data through without full buffering
 - [ ] **DNS lookups on hot path** - `tcpConnectToHost` does DNS every time
@@ -30,12 +29,11 @@
 
 ## Architectural Improvements (P2-P3 - Future Work)
 
-- [ ] **Event-driven architecture** - Use epoll/kqueue for async I/O
+- [x] **Event-driven architecture** - Use epoll/kqueue for async I/O
 - [ ] **Connection pooling** - Reuse backend connections
 - [ ] **Streaming proxy** - Forward data without full buffering
-- [ ] **Worker thread pool** - Handle requests concurrently
 - [ ] **Configuration system** - Hardcoded constants need to be configurable
-- [ ] **Proper logging** - Structured logging instead of print statements
+- [x] **Proper logging** - Structured logging instead of print statements
 - [ ] **Health checks** - Monitor backend availability
 - [ ] **Metrics/monitoring** - Request counts, latency, error rates
 
