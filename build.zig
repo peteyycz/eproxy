@@ -79,6 +79,30 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
+    // Add test server executable
+    const test_server_exe = b.addExecutable(.{
+        .name = "test_server",
+        .root_source_file = b.path("test_server.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    
+    // Add the same options and dependencies as the main executable
+    test_server_exe.root_module.addImport("build_options", options.createModule());
+    test_server_exe.root_module.addImport("xev", libxev.module("xev"));
+    
+    b.installArtifact(test_server_exe);
+    
+    const test_server_run_cmd = b.addRunArtifact(test_server_exe);
+    test_server_run_cmd.step.dependOn(b.getInstallStep());
+    
+    if (b.args) |args| {
+        test_server_run_cmd.addArgs(args);
+    }
+    
+    const test_server_run_step = b.step("run-server", "Run the test HTTP server");
+    test_server_run_step.dependOn(&test_server_run_cmd.step);
+
 
     const exe_unit_tests = b.addTest(.{
         .root_module = exe_mod,
