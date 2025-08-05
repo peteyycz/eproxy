@@ -1,10 +1,7 @@
 const std = @import("std");
 const log = std.log;
 const xev = @import("xev");
-const http_client = @import("http_client.zig");
-const HttpRequest = @import("http/request.zig").HttpRequest;
-const ResponseWriter = @import("http/response_writer.zig").ResponseWriter;
-const Server = @import("http_server.zig").Server;
+const http = @import("http.zig");
 
 // Another example callback for chaining requests
 pub fn main() !void {
@@ -23,8 +20,8 @@ pub fn main() !void {
 
     log.info("Starting async HTTP requests...", .{});
 
-    try http_client.fetchUrl(allocator, &loop, "http://httpbin.org/get", struct {
-        fn handleResponse(err: ?http_client.FetchError, response: ?http_client.HttpResponse) void {
+    try http.fetch(allocator, &loop, "http://httpbin.org/get", struct {
+        fn handleResponse(err: ?http.FetchError, response: ?http.client.HttpResponse) void {
             if (err) |error_info| {
                 log.err("Request failed: {}", .{error_info});
                 return;
@@ -47,8 +44,8 @@ pub fn main() !void {
     }.handleResponse);
 
     // Create server
-    var server = Server.init(allocator, &loop, struct {
-        fn handleRequest(request: HttpRequest, response_writer: *ResponseWriter) void {
+    var server = http.Server.init(allocator, &loop, struct {
+        fn handleRequest(request: http.Request, response_writer: *http.ResponseWriter) void {
             log.info("Received {s} request to {s}", .{ request.method.toString(), request.path });
 
             if (request.query_string) |qs| {

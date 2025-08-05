@@ -138,7 +138,7 @@ fn parseUrl(url: []const u8) !ParsedUrl {
 }
 
 // Main fetchUrl function with Node.js-style callback
-pub fn fetchUrl(allocator: std.mem.Allocator, loop: *xev.Loop, url: []const u8, callback: FetchCallback) !void {
+pub fn fetch(allocator: std.mem.Allocator, loop: *xev.Loop, url: []const u8, callback: FetchCallback) !void {
     // Parse URL
     const parsed = parseUrl(url) catch {
         callback(FetchError.invalid_url, null);
