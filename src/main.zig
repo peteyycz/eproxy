@@ -3,7 +3,10 @@ const log = std.log;
 const xev = @import("xev");
 const http = @import("http.zig");
 
-// Another example callback for chaining requests
+// Global context accessible to request handlers
+var g_allocator: std.mem.Allocator = undefined;
+var g_loop: *xev.Loop = undefined;
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -18,30 +21,11 @@ pub fn main() !void {
     });
     defer loop.deinit();
 
-    log.info("Starting async HTTP requests...", .{});
+    // Set global context for request handlers
+    g_allocator = allocator;
+    g_loop = &loop;
 
-    try http.fetch(allocator, &loop, "http://httpbin.org/get", struct {
-        fn handleResponse(err: ?http.FetchError, response: ?http.client.HttpResponse) void {
-            if (err) |error_info| {
-                log.err("Request failed: {}", .{error_info});
-                return;
-            }
-
-            if (response) |resp| {
-                log.info("=== HTTP Response ===", .{});
-                log.info("Status: {}", .{resp.status_code});
-                log.info("Body length: {} bytes", .{resp.body.len});
-                log.info("Body preview: {s}", .{resp.body[0..@min(resp.body.len, 200)]});
-
-                // Print some headers
-                var header_iter = resp.headers.iterator();
-                log.info("Headers:", .{});
-                while (header_iter.next()) |entry| {
-                    log.info("  {s}: {s}", .{ entry.key_ptr.*, entry.value_ptr.* });
-                }
-            }
-        }
-    }.handleResponse);
+    log.info("Starting HTTP server with proxy capability...", .{});
 
     // Create server
     var server = http.Server.init(allocator, &loop, struct {
@@ -63,11 +47,40 @@ pub fn main() !void {
                 log.info("Body ({d} bytes): {s}", .{ request.body.len, request.body });
             }
 
-            // Create a simple response based on the path
+            // Example: Fetch data from external API when /proxy path is requested
+            if (std.mem.eql(u8, request.path, "/proxy")) {
+                log.info("Making external HTTP request...", .{});
+
+                http.fetch(g_allocator, g_loop, "http://httpbin.org/get", struct {
+                    fn handleResponse(err: ?http.FetchError, response: ?http.client.HttpResponse) void {
+                        if (err) |error_info| {
+                            log.err("External request failed: {any}", .{error_info});
+                            return;
+                        }
+
+                        if (response) |resp| {
+                            log.info("=== External HTTP Response ===", .{});
+                            log.info("Status: {d}", .{resp.status_code});
+                            log.info("Body length: {d} bytes", .{resp.body.len});
+                            log.info("Body preview: {s}", .{resp.body[0..@min(resp.body.len, 200)]});
+                        }
+                    }
+                }.handleResponse) catch |err| {
+                    log.err("Failed to initiate external request: {any}", .{err});
+                };
+
+                // For now, send immediate response (in a real proxy, you'd wait for the external response)
+                response_writer.writeResponse(200, "Proxy request initiated - check logs for external response") catch |err| {
+                    log.err("Failed to write response: {any}", .{err});
+                };
+                return;
+            }
+
+            // Regular response handling
             const response_body = if (std.mem.eql(u8, request.path, "/hello"))
                 "Hello, World!"
             else if (std.mem.eql(u8, request.path, "/"))
-                "Welcome to the HTTP server!"
+                "Welcome to the HTTP server! Try /proxy to see external HTTP requests."
             else
                 "Not Found";
 
@@ -78,15 +91,20 @@ pub fn main() !void {
             };
         }
     }.handleRequest);
+
     // Start listening
     try server.listen(8080);
 
-    log.info("Requests initiated, running event loop...", .{});
+    log.info("Server started on http://localhost:8080", .{});
+    log.info("Try these endpoints:", .{});
+    log.info("  /hello - Simple greeting", .{});
+    log.info("  /proxy - Makes external HTTP request", .{});
+    log.info("Press Ctrl+C to stop", .{});
 
     // Run the event loop to process all async operations
     try loop.run(.until_done);
 
-    log.info("All requests completed", .{});
+    log.info("Server stopped", .{});
 
     // Explicitly shutdown the thread pool
     thread_pool.shutdown();
