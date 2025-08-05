@@ -3,17 +3,19 @@ const xev = @import("xev");
 const HttpMethod = @import("http/method.zig").HttpMethod;
 const HttpResponse = @import("http/response.zig").HttpResponse;
 const HttpRequest = @import("http/request.zig").HttpRequest;
-const ResponseWriter = @import("http/response_writer.zig").ResponseWriter;
 const log = std.log;
 
-pub const HandlerCallback = *const fn (request: HttpRequest, response_writer: *ResponseWriter) void;
+const crlf = "\r\n";
+const headers_end_marker = crlf ++ crlf;
 
+// Forward declarations to break dependency loops
 const ConnectionContext = struct {
     socket: xev.TCP,
     server: *Server,
     allocator: std.mem.Allocator,
     arena: std.heap.ArenaAllocator,
     arena_allocator: std.mem.Allocator,
+    loop: *xev.Loop,
 
     // I/O state
     read_completion: xev.Completion,
@@ -26,7 +28,10 @@ const ConnectionContext = struct {
     content_length: usize,
     bytes_read: usize,
 
-    pub fn init(allocator: std.mem.Allocator, socket: xev.TCP, server: *Server) !*ConnectionContext {
+    // Response state for async handling
+    response_sent: bool,
+
+    pub fn init(allocator: std.mem.Allocator, socket: xev.TCP, server: *Server, loop: *xev.Loop) !*ConnectionContext {
         const ctx = try allocator.create(ConnectionContext);
         ctx.* = ConnectionContext{
             .socket = socket,
@@ -34,6 +39,7 @@ const ConnectionContext = struct {
             .allocator = allocator,
             .arena = std.heap.ArenaAllocator.init(allocator),
             .arena_allocator = undefined,
+            .loop = loop,
             .read_completion = undefined,
             .write_completion = undefined,
             .close_completion = undefined,
@@ -41,6 +47,7 @@ const ConnectionContext = struct {
             .headers_complete = false,
             .content_length = 0,
             .bytes_read = 0,
+            .response_sent = false,
         };
 
         ctx.arena_allocator = ctx.arena.allocator();
@@ -54,17 +61,56 @@ const ConnectionContext = struct {
     }
 };
 
-const CRLF = "\r\n";
-const HEADERS_END_MARKER = CRLF ++ CRLF;
+// Async response context - holds everything needed to send a response later
+pub const AsyncResponseContext = struct {
+    ctx: *ConnectionContext,
+    loop: *xev.Loop,
+    socket: xev.TCP,
+
+    pub fn respond(self: *AsyncResponseContext, status_code: u16, body: []const u8) void {
+        // Prevent double responses
+        if (self.ctx.response_sent) {
+            log.warn("Attempt to send response twice - ignoring", .{});
+            // Clean up self before returning
+            self.ctx.allocator.destroy(self);
+            return;
+        }
+        self.ctx.response_sent = true;
+
+        var response = HttpResponse.init(self.ctx.arena_allocator, status_code, body) catch {
+            log.err("Failed to create async response", .{});
+            // Clean up self before returning
+            self.ctx.allocator.destroy(self);
+            return;
+        };
+        defer response.deinit();
+
+        // Inline response sending to avoid function scope issues
+        const response_bytes = response.toBytes(self.ctx.arena_allocator) catch |err| {
+            log.err("Failed to serialize response: {any}", .{err});
+            // Clean up self before returning
+            self.ctx.allocator.destroy(self);
+            return;
+        };
+
+        // Clean up self after initiating the write (the write callback will handle connection cleanup)
+        defer self.ctx.allocator.destroy(self);
+
+        self.socket.write(self.loop, &self.ctx.write_completion, .{ .slice = response_bytes }, ConnectionContext, self.ctx, Server.writeCallback);
+    }
+};
+
+// Async handler callback type - use anyopaque to break circular dependency
+pub const AsyncHandlerCallback = *const fn (request: HttpRequest, response_ctx: *anyopaque) void;
 
 pub const Server = struct {
     loop: *xev.Loop,
     allocator: std.mem.Allocator,
-    handler: HandlerCallback,
+    handler: AsyncHandlerCallback,
     tcp_server: ?xev.TCP,
     accept_completion: xev.Completion,
 
-    pub fn init(allocator: std.mem.Allocator, loop: *xev.Loop, handler: HandlerCallback) Server {
+    pub fn init(allocator: std.mem.Allocator, loop: *xev.Loop, handler: AsyncHandlerCallback) Server {
         return Server{
             .loop = loop,
             .allocator = allocator,
@@ -109,9 +155,8 @@ pub const Server = struct {
         log.debug("New client connection accepted", .{});
 
         // Create connection context
-        const conn_ctx = ConnectionContext.init(server.allocator, client_socket, server) catch |err| {
+        const conn_ctx = ConnectionContext.init(server.allocator, client_socket, server, loop) catch |err| {
             log.err("Failed to create connection context: {any}", .{err});
-            // Just log the error and continue - we can't properly close without a completion
             server.tcp_server.?.accept(loop, &server.accept_completion, Server, server, acceptCallback);
             return .disarm;
         };
@@ -184,15 +229,15 @@ pub const Server = struct {
         const request_data = ctx.request_buffer.items;
 
         // Look for end of headers
-        const headers_end = std.mem.indexOf(u8, request_data, HEADERS_END_MARKER) orelse {
+        const headers_end = std.mem.indexOf(u8, request_data, headers_end_marker) orelse {
             return error.IncompleteRequest;
         };
 
         const headers_section = request_data[0..headers_end];
-        const body_start = headers_end + HEADERS_END_MARKER.len;
+        const body_start = headers_end + headers_end_marker.len;
 
         // Parse request line and headers
-        var lines = std.mem.splitSequence(u8, headers_section, CRLF);
+        var lines = std.mem.splitSequence(u8, headers_section, crlf);
         const request_line = lines.next() orelse return error.InvalidRequest;
 
         // Parse request line: "METHOD /path HTTP/1.1"
@@ -256,30 +301,21 @@ pub const Server = struct {
     fn handleRequest(ctx: *ConnectionContext, loop: *xev.Loop, socket: xev.TCP, request: HttpRequest) void {
         log.info("Handling {s} request to {s}", .{ request.method.toString(), request.path });
 
-        // Create response writer
-        var response_writer = ResponseWriter.init(ctx.arena_allocator);
-        defer response_writer.deinit();
-
-        // Call the user handler
-        ctx.server.handler(request, &response_writer);
-
-        // Send response
-        if (response_writer.response) |*response| {
-            sendResponse(ctx, loop, socket, response);
-        } else {
-            // No response was written, send 500
-            sendErrorResponse(ctx, loop, socket, 500);
-        }
-    }
-
-    fn sendResponse(ctx: *ConnectionContext, loop: *xev.Loop, socket: xev.TCP, response: *HttpResponse) void {
-        const response_bytes = response.toBytes(ctx.arena_allocator) catch |err| {
-            log.err("Failed to serialize response: {any}", .{err});
+        // Heap-allocate async response context to prevent stack invalidation
+        const response_ctx = ctx.allocator.create(AsyncResponseContext) catch {
+            log.err("Failed to allocate AsyncResponseContext", .{});
             sendErrorResponse(ctx, loop, socket, 500);
             return;
         };
 
-        socket.write(loop, &ctx.write_completion, .{ .slice = response_bytes }, ConnectionContext, ctx, writeCallback);
+        response_ctx.* = AsyncResponseContext{
+            .ctx = ctx,
+            .loop = loop,
+            .socket = socket,
+        };
+
+        // Call the async handler (cast to anyopaque to break circular dependency)
+        ctx.server.handler(request, @ptrCast(response_ctx));
     }
 
     fn sendErrorResponse(ctx: *ConnectionContext, loop: *xev.Loop, socket: xev.TCP, status_code: u16) void {
@@ -298,6 +334,16 @@ pub const Server = struct {
         defer error_response.deinit();
 
         sendResponse(ctx, loop, socket, &error_response);
+    }
+
+    fn sendResponse(ctx: *ConnectionContext, loop: *xev.Loop, socket: xev.TCP, response: *HttpResponse) void {
+        const response_bytes = response.toBytes(ctx.arena_allocator) catch |err| {
+            log.err("Failed to serialize response: {any}", .{err});
+            sendErrorResponse(ctx, loop, socket, 500);
+            return;
+        };
+
+        socket.write(loop, &ctx.write_completion, .{ .slice = response_bytes }, ConnectionContext, ctx, writeCallback);
     }
 
     fn writeCallback(
@@ -353,3 +399,4 @@ pub const Server = struct {
         return .disarm;
     }
 };
+

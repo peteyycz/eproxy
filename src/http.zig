@@ -5,10 +5,11 @@
 pub const HttpMethod = @import("http/method.zig").HttpMethod;
 pub const HttpRequest = @import("http/request.zig").HttpRequest;
 pub const HttpResponse = @import("http/response.zig").HttpResponse;
-pub const ResponseWriter = @import("http/response_writer.zig").ResponseWriter;
 
-// Re-export HTTP server functionality
+// Re-export HTTP server functionality (async-only)
 pub const Server = @import("http_server.zig").Server;
+pub const AsyncResponseContext = @import("http_server.zig").AsyncResponseContext;
+pub const AsyncHandlerCallback = @import("http_server.zig").AsyncHandlerCallback;
 
 // Re-export HTTP client functionality
 pub const client = @import("http_client.zig");

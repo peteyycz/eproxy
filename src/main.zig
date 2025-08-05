@@ -7,6 +7,10 @@ const http = @import("http.zig");
 var g_allocator: std.mem.Allocator = undefined;
 var g_loop: *xev.Loop = undefined;
 
+// Global response context storage for async callbacks
+var g_response_ctx: ?*http.AsyncResponseContext = null;
+var response_context_mutex = std.Thread.Mutex{};
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -27,9 +31,10 @@ pub fn main() !void {
 
     log.info("Starting HTTP server with proxy capability...", .{});
 
-    // Create server
+    // Create server with async handler
     var server = http.Server.init(allocator, &loop, struct {
-        fn handleRequest(request: http.Request, response_writer: *http.ResponseWriter) void {
+        fn handleRequest(request: http.Request, response_ctx_opaque: *anyopaque) void {
+            const response_ctx: *http.AsyncResponseContext = @ptrCast(@alignCast(response_ctx_opaque));
             log.info("Received {s} request to {s}", .{ request.method.toString(), request.path });
 
             if (request.query_string) |qs| {
@@ -51,44 +56,59 @@ pub fn main() !void {
             if (std.mem.eql(u8, request.path, "/proxy")) {
                 log.info("Making external HTTP request...", .{});
 
+                // Store response context globally for the callback to access
+                response_context_mutex.lock();
+                g_response_ctx = response_ctx;
+                response_context_mutex.unlock();
+
                 http.fetch(g_allocator, g_loop, "http://httpbin.org/get", struct {
                     fn handleResponse(err: ?http.FetchError, response: ?http.client.HttpResponse) void {
-                        if (err) |error_info| {
-                            log.err("External request failed: {any}", .{error_info});
-                            return;
-                        }
+                        // Retrieve the stored response context
+                        response_context_mutex.lock();
+                        const ctx = g_response_ctx;
+                        g_response_ctx = null; // Clear it after use
+                        response_context_mutex.unlock();
 
-                        if (response) |resp| {
-                            log.info("=== External HTTP Response ===", .{});
-                            log.info("Status: {d}", .{resp.status_code});
-                            log.info("Body length: {d} bytes", .{resp.body.len});
-                            log.info("Body preview: {s}", .{resp.body[0..@min(resp.body.len, 200)]});
+                        if (ctx) |response_context| {
+                            if (err) |error_info| {
+                                log.err("External request failed: {any}", .{error_info});
+                                response_context.respond(500, "External request failed");
+                                return;
+                            }
+
+                            if (response) |resp| {
+                                log.info("=== External HTTP Response (async) ===", .{});
+                                log.info("Status: {d}", .{resp.status_code});
+                                log.info("Body length: {d} bytes", .{resp.body.len});
+                                log.info("Body preview: {s}", .{resp.body[0..@min(resp.body.len, 200)]});
+                                
+                                // Send the actual external API response back to the client
+                                response_context.respond(@intCast(resp.status_code), resp.body);
+                            }
+                        } else {
+                            log.err("Response context was null in callback", .{});
                         }
                     }
                 }.handleResponse) catch |err| {
                     log.err("Failed to initiate external request: {any}", .{err});
+                    response_ctx.respond(500, "Failed to initiate proxy request");
                 };
-
-                // For now, send immediate response (in a real proxy, you'd wait for the external response)
-                response_writer.writeResponse(200, "Proxy request initiated - check logs for external response") catch |err| {
-                    log.err("Failed to write response: {any}", .{err});
-                };
+                
+                // Don't send immediate response - the callback will handle it
                 return;
             }
 
             // Regular response handling
             const response_body = if (std.mem.eql(u8, request.path, "/hello"))
-                "Hello, World!"
+                "Hello, World! (Async)"
             else if (std.mem.eql(u8, request.path, "/"))
-                "Welcome to the HTTP server! Try /proxy to see external HTTP requests."
+                "Welcome to the Async HTTP server! Try /proxy to see external HTTP requests."
             else
                 "Not Found";
 
             const status_code: u16 = if (std.mem.eql(u8, response_body, "Not Found")) 404 else 200;
 
-            response_writer.writeResponse(status_code, response_body) catch |err| {
-                log.err("Failed to write response: {any}", .{err});
-            };
+            response_ctx.respond(status_code, response_body);
         }
     }.handleRequest);
 

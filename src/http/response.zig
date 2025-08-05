@@ -1,9 +1,9 @@
 const std = @import("std");
 
 // Static header constants to avoid allocations
-const CONTENT_LENGTH_HEADER: []const u8 = "Content-Length";
-const CONTENT_TYPE_HEADER: []const u8 = "Content-Type";
-const CONTENT_TYPE_TEXT_PLAIN: []const u8 = "text/plain";
+const content_length_header: []const u8 = "Content-Length";
+const content_type_header: []const u8 = "Content-Type";
+const content_type_text_plain: []const u8 = "text/plain";
 
 pub const HttpResponse = struct {
     status_code: u16,
@@ -29,8 +29,8 @@ pub const HttpResponse = struct {
         const content_length_value = try std.fmt.allocPrint(allocator, "{d}", .{body.len});
         try allocated_header_values.append(content_length_value);
 
-        try headers.put(CONTENT_LENGTH_HEADER, content_length_value);
-        try headers.put(CONTENT_TYPE_HEADER, CONTENT_TYPE_TEXT_PLAIN);
+        try headers.put(content_length_header, content_length_value);
+        try headers.put(content_type_header, content_type_text_plain);
 
         return HttpResponse{
             .status_code = status_code,
