@@ -1,13 +1,13 @@
 const std = @import("std");
 const log = std.log;
 const xev = @import("xev");
-const http = @import("http.zig");
+const eproxy = @import("eproxy");
 
 // Global context accessible to request handlers
 var g_allocator: std.mem.Allocator = undefined;
 var g_loop: *xev.Loop = undefined;
 
-var g_response_ctx: ?*http.ResponseContext = null;
+var g_response_ctx: ?*eproxy.ResponseContext = null;
 var response_context_mutex = std.Thread.Mutex{};
 
 pub fn main() !void {
@@ -30,8 +30,8 @@ pub fn main() !void {
 
     log.info("Starting HTTP server...", .{});
 
-    var server = http.Server.init(allocator, &loop, struct {
-        fn handleRequest(request: http.Request, response_ctx: *http.ResponseContext) void {
+    var server = eproxy.createServer(allocator, &loop, struct {
+        fn handleRequest(request: eproxy.Request, response_ctx: *eproxy.ResponseContext) void {
             log.info("Received {s} request to {s}", .{ request.method.toString(), request.path });
 
             if (request.query_string) |qs| {
@@ -58,8 +58,8 @@ pub fn main() !void {
                 g_response_ctx = response_ctx;
                 response_context_mutex.unlock();
 
-                http.fetch(g_allocator, g_loop, "http://httpbin.org/get", struct {
-                    fn handleResponse(err: ?http.FetchError, response: ?http.client.HttpResponse) void {
+                eproxy.http.fetch(g_allocator, g_loop, "http://httpbin.org/get", struct {
+                    fn handleResponse(err: ?eproxy.http.FetchError, response: ?eproxy.http.client.HttpResponse) void {
                         // Retrieve the stored response context
                         response_context_mutex.lock();
                         const ctx = g_response_ctx;
