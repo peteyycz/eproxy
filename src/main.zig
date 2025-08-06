@@ -3,18 +3,6 @@ const log = std.log;
 const xev = @import("xev");
 const eproxy = @import("eproxy");
 
-fn getAddressByUrl(
-    allocator: std.mem.Allocator,
-    url: []const u8,
-) !std.net.Address {
-    const address_list = try std.net.getAddressList(allocator, url, 80);
-    defer address_list.deinit();
-    if (address_list.addrs.len == 0) {
-        return error.NoAddressesFound;
-    }
-    return address_list.addrs[0];
-}
-
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
@@ -29,11 +17,19 @@ pub fn main() !void {
     });
     defer loop.deinit();
 
-    const address = try getAddressByUrl(allocator, "httpbin.org");
+    const address = try eproxy.resolveAddress(allocator, "httpbin.org");
 
     const socket = try xev.TCP.init(address);
-
-    const fetchContext = try FetchContext.init(allocator);
+    const fetchContext = try FetchContext.init(allocator, struct {
+        // Callback to handle the result of the fetch operation
+        pub fn callback(result: anyerror![]u8) void {
+            const response = result catch |err| {
+                log.err("Fetch failed: {}", .{err});
+                return;
+            };
+            log.info("Fetch completed successfully, response: {s}", .{response});
+        }
+    }.callback);
     socket.connect(&loop, &fetchContext.connect_completion, address, FetchContext, fetchContext, connectCallback);
 
     // Run the event loop to process all async operations
@@ -45,21 +41,30 @@ pub fn main() !void {
     thread_pool.shutdown();
 }
 
+const FetchCallback = *const fn (
+    result: anyerror![]u8,
+) void;
+
 const FetchContext = struct {
     connect_completion: xev.Completion = undefined,
     write_completion: xev.Completion = undefined,
     read_completion: xev.Completion = undefined,
+    shutdown_completion: xev.Completion = undefined,
 
+    read_buffer: [read_buffer_size]u8 = undefined,
     response_buffer: std.ArrayList(u8) = undefined,
 
     allocator: std.mem.Allocator,
 
     request_string: []const u8 = undefined,
 
+    callback: FetchCallback = undefined,
+
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator) !*Self {
+    pub fn init(allocator: std.mem.Allocator, callback: FetchCallback) !*Self {
         const ctx = try allocator.create(Self);
+        ctx.callback = callback;
         ctx.response_buffer = std.ArrayList(u8).init(allocator);
         ctx.allocator = allocator;
         return ctx;
@@ -84,6 +89,7 @@ fn connectCallback(
     const ctx = ctx_opt orelse return .disarm;
     result catch |err| {
         log.err("Connection failed: {}", .{err});
+        ctx.callback(err);
         ctx.deinit();
         return .disarm;
     };
@@ -93,6 +99,7 @@ fn connectCallback(
     const request = eproxy.Request.init(.GET, "httpbin.org", "/get");
     ctx.request_string = request.allocPrint(ctx.allocator) catch |err| {
         log.err("Failed to create request string: {}", .{err});
+        ctx.callback(err);
         ctx.deinit();
         return .disarm;
     };
@@ -125,17 +132,17 @@ fn writeCallback(
     const ctx = ctx_opt orelse return .disarm;
     const bytes_written = result catch |err| {
         log.err("Write failed: {}", .{err});
+        ctx.callback(err);
         ctx.deinit();
         return .disarm;
     };
 
     log.info("Bytes written: {}", .{bytes_written});
 
-    var read_buffer: [read_buffer_size]u8 = undefined;
     socket.read(
         loop,
         &ctx.read_completion,
-        .{ .slice = &read_buffer },
+        .{ .slice = &ctx.read_buffer },
         FetchContext,
         ctx,
         readCallback,
@@ -145,18 +152,19 @@ fn writeCallback(
 }
 
 fn readCallback(ctx_opt: ?*FetchContext, loop: *xev.Loop, completion: *xev.Completion, socket: xev.TCP, read_buffer: xev.ReadBuffer, result: xev.ReadError!usize) xev.CallbackAction {
-    _ = loop;
     _ = completion;
-    _ = socket;
 
     const ctx = ctx_opt orelse return .disarm;
     const bytes_read = result catch |err| {
         if (err == xev.ReadError.EOF) {
             // EOF indicates the server has closed the connection
             log.info("Response is {s}", .{ctx.response_buffer.items});
-            ctx.deinit();
+            // Not sure if the callback should be called before shutdown?
+            ctx.callback(ctx.response_buffer.items);
+            socket.shutdown(loop, &ctx.shutdown_completion, FetchContext, ctx, shutdownCallback);
         } else {
             log.err("Read error: {}", .{err});
+            ctx.callback(err);
             ctx.deinit();
         }
         return .disarm;
@@ -167,9 +175,29 @@ fn readCallback(ctx_opt: ?*FetchContext, loop: *xev.Loop, completion: *xev.Compl
     log.debug("{} bytes: {s}", .{ bytes_read, response_data });
     ctx.response_buffer.appendSlice(response_data) catch |err| {
         log.err("Failed to append response data: {}", .{err});
+        ctx.callback(err);
         ctx.deinit();
         return .disarm;
     };
 
     return .rearm;
+}
+
+fn shutdownCallback(ctx_opt: ?*FetchContext, loop: *xev.Loop, completion: *xev.Completion, socket: xev.TCP, result: xev.ShutdownError!void) xev.CallbackAction {
+    _ = loop;
+    _ = completion;
+    _ = socket;
+
+    const ctx = ctx_opt orelse return .disarm;
+    result catch |err| {
+        log.err("Shutdown failed: {}", .{err});
+        // No need to call the callback here, as we already did in readCallback
+        ctx.deinit();
+        return .disarm;
+    };
+
+    log.info("Socket shutdown successfully", .{});
+
+    ctx.deinit();
+    return .disarm;
 }
