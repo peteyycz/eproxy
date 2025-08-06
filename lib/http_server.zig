@@ -22,6 +22,10 @@ const ConnectionContext = struct {
     write_completion: xev.Completion,
     close_completion: xev.Completion,
 
+    // Handler state for completion-based handling
+    handler_completion: xev.Completion,
+    handler_ctx: ?*HandlerContext,
+
     // Request parsing state
     request_buffer: std.ArrayList(u8),
     headers_complete: bool,
@@ -43,6 +47,8 @@ const ConnectionContext = struct {
             .read_completion = undefined,
             .write_completion = undefined,
             .close_completion = undefined,
+            .handler_completion = undefined,
+            .handler_ctx = null,
             .request_buffer = std.ArrayList(u8).init(allocator),
             .headers_complete = false,
             .content_length = 0,
@@ -55,9 +61,27 @@ const ConnectionContext = struct {
     }
 
     pub fn deinit(self: *ConnectionContext) void {
+        if (self.handler_ctx) |handler_ctx| {
+            self.allocator.destroy(handler_ctx);
+        }
         self.request_buffer.deinit();
         self.arena.deinit();
         self.allocator.destroy(self);
+    }
+};
+
+// Handler context for completion-based request handling
+pub const HandlerContext = struct {
+    connection_ctx: *ConnectionContext,
+    request: HttpRequest,
+    response_ctx: *ResponseContext,
+    
+    pub fn init(connection_ctx: *ConnectionContext, request: HttpRequest, response_ctx: *ResponseContext) HandlerContext {
+        return HandlerContext{
+            .connection_ctx = connection_ctx,
+            .request = request,
+            .response_ctx = response_ctx,
+        };
     }
 };
 
@@ -105,23 +129,36 @@ pub const ResponseContext = struct {
     }
 };
 
-// Generic handler callback type - type-safe alternative to anyopaque
-pub fn HandlerCallback(comptime ResponseType: type) type {
-    return *const fn (request: HttpRequest, response_ctx: *ResponseType) void;
+// Completion-based handler callback type
+pub fn HandlerCallback(comptime ContextType: type) type {
+    return *const fn (
+        ctx: ?*ContextType,
+        loop: *xev.Loop,
+        completion: *xev.Completion,
+        handler_ctx: *HandlerContext
+    ) xev.CallbackAction;
 }
 
 pub const Server = struct {
     loop: *xev.Loop,
     allocator: std.mem.Allocator,
-    handler: HandlerCallback(ResponseContext),
+    handler_callback: HandlerCallback(anyopaque),
+    handler_context: *anyopaque,
     tcp_server: ?xev.TCP,
     accept_completion: xev.Completion,
 
-    pub fn init(allocator: std.mem.Allocator, loop: *xev.Loop, handler: HandlerCallback(ResponseContext)) Server {
+    pub fn init(
+        allocator: std.mem.Allocator, 
+        loop: *xev.Loop, 
+        comptime ContextType: type,
+        context: *ContextType,
+        handler: HandlerCallback(ContextType)
+    ) Server {
         return Server{
             .loop = loop,
             .allocator = allocator,
-            .handler = handler,
+            .handler_callback = @ptrCast(handler),
+            .handler_context = @ptrCast(context),
             .tcp_server = null,
             .accept_completion = undefined,
         };
@@ -214,7 +251,7 @@ pub const Server = struct {
 
         // Try to parse the request
         if (tryParseRequest(ctx)) |request| {
-            handleRequest(ctx, loop, socket, request);
+            scheduleRequestHandler(ctx, loop, socket, request);
         } else |err| switch (err) {
             error.IncompleteRequest => {
                 // Continue reading more data
@@ -303,8 +340,8 @@ pub const Server = struct {
         };
     }
 
-    fn handleRequest(ctx: *ConnectionContext, loop: *xev.Loop, socket: xev.TCP, request: HttpRequest) void {
-        log.info("Handling {s} request to {s}", .{ request.method.toString(), request.path });
+    fn scheduleRequestHandler(ctx: *ConnectionContext, loop: *xev.Loop, socket: xev.TCP, request: HttpRequest) void {
+        log.info("Scheduling handler for {s} request to {s}", .{ request.method.toString(), request.path });
 
         // Heap-allocate response context to prevent stack invalidation
         const response_ctx = ctx.allocator.create(ResponseContext) catch {
@@ -320,8 +357,34 @@ pub const Server = struct {
             .write_callback = writeResponse,
         };
 
-        // Call the handler with type-safe pointer
-        ctx.server.handler(request, response_ctx);
+        // Create handler context
+        const handler_ctx = ctx.allocator.create(HandlerContext) catch {
+            log.err("Failed to allocate HandlerContext", .{});
+            sendErrorResponse(ctx, loop, socket, 500);
+            ctx.allocator.destroy(response_ctx);
+            return;
+        };
+        
+        handler_ctx.* = HandlerContext.init(ctx, request, response_ctx);
+        ctx.handler_ctx = handler_ctx;
+        
+        // Schedule handler completion
+        const result = ctx.server.handler_callback(
+            ctx.server.handler_context,
+            loop,
+            &ctx.handler_completion,
+            handler_ctx
+        );
+        
+        if (result == .disarm) {
+            // Handler completed immediately, clean up
+            ctx.allocator.destroy(handler_ctx);
+            ctx.handler_ctx = null;
+        }
+    }
+
+    fn handleRequest(ctx: *ConnectionContext, loop: *xev.Loop, socket: xev.TCP, request: HttpRequest) void {
+        scheduleRequestHandler(ctx, loop, socket, request);
     }
 
     fn writeResponse(ctx: *ConnectionContext, loop: *xev.Loop, socket: xev.TCP, response_bytes: []const u8) void {

@@ -40,12 +40,21 @@ pub const HttpResponse = struct {
     }
 };
 
-pub const FetchCallback = *const fn (err: ?FetchError, response: ?HttpResponse) void;
+// Completion-based callback type
+pub const FetchCallback = *const fn (
+    ctx: ?*anyopaque,
+    loop: *xev.Loop,
+    completion: *xev.Completion,
+    err: ?FetchError,
+    response: ?HttpResponse
+) xev.CallbackAction;
 
 const FetchContext = struct {
     allocator: std.mem.Allocator,
     loop: *xev.Loop,
     callback: FetchCallback,
+    user_completion: *xev.Completion,
+    user_context: *anyopaque,
 
     // Connection state
     socket: ?xev.TCP,
@@ -68,12 +77,14 @@ const FetchContext = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, loop: *xev.Loop, callback: FetchCallback) !*Self {
+    pub fn init(allocator: std.mem.Allocator, loop: *xev.Loop, callback: FetchCallback, user_completion: *xev.Completion, user_context: *anyopaque) !*Self {
         const ctx = try allocator.create(Self);
         ctx.* = Self{
             .allocator = allocator,
             .loop = loop,
             .callback = callback,
+            .user_completion = user_completion,
+            .user_context = user_context,
             .socket = null,
             .connect_completion = undefined,
             .write_completion = undefined,
@@ -99,7 +110,7 @@ const FetchContext = struct {
     }
 
     fn callCallback(self: *Self, err: ?FetchError, response: ?HttpResponse) void {
-        self.callback(err, response);
+        _ = self.callback(self.user_context, self.loop, self.user_completion, err, response);
         self.deinit();
     }
 };
@@ -136,17 +147,29 @@ fn parseUrl(url: []const u8) !ParsedUrl {
     }
 }
 
-// Main fetchUrl function with Node.js-style callback
-pub fn fetch(allocator: std.mem.Allocator, loop: *xev.Loop, url: []const u8, callback: FetchCallback) !void {
+// Completion-based fetch function
+pub fn fetch(
+    allocator: std.mem.Allocator, 
+    loop: *xev.Loop, 
+    url: []const u8,
+    completion: *xev.Completion,
+    comptime ContextType: type,
+    context: *ContextType,
+    callback: *const fn(?*ContextType, *xev.Loop, *xev.Completion, ?FetchError, ?HttpResponse) xev.CallbackAction
+) !void {
     // Parse URL
     const parsed = parseUrl(url) catch {
-        callback(FetchError.invalid_url, null);
+        _ = callback(context, loop, completion, FetchError.invalid_url, null);
         return;
     };
 
+    // Cast the typed callback to generic callback
+    const generic_callback: FetchCallback = @ptrCast(callback);
+    const generic_context: *anyopaque = @ptrCast(context);
+
     // Create context
-    const ctx = FetchContext.init(allocator, loop, callback) catch |err| {
-        callback(FetchError{ .out_of_memory = err }, null);
+    const ctx = FetchContext.init(allocator, loop, generic_callback, completion, generic_context) catch |err| {
+        _ = callback(context, loop, completion, FetchError{ .out_of_memory = err }, null);
         return;
     };
 
@@ -187,6 +210,7 @@ pub fn fetch(allocator: std.mem.Allocator, loop: *xev.Loop, url: []const u8, cal
 
     ctx.socket.?.connect(loop, &ctx.connect_completion, address, FetchContext, ctx, connectCallback);
 }
+
 
 fn connectCallback(
     ctx_opt: ?*FetchContext,
