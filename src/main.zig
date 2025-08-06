@@ -7,8 +7,7 @@ const http = @import("http.zig");
 var g_allocator: std.mem.Allocator = undefined;
 var g_loop: *xev.Loop = undefined;
 
-// Global response context storage for async callbacks
-var g_response_ctx: ?*http.AsyncResponseContext = null;
+var g_response_ctx: ?*http.ResponseContext = null;
 var response_context_mutex = std.Thread.Mutex{};
 
 pub fn main() !void {
@@ -29,12 +28,10 @@ pub fn main() !void {
     g_allocator = allocator;
     g_loop = &loop;
 
-    log.info("Starting HTTP server with proxy capability...", .{});
+    log.info("Starting HTTP server...", .{});
 
-    // Create server with async handler
     var server = http.Server.init(allocator, &loop, struct {
-        fn handleRequest(request: http.Request, response_ctx_opaque: *anyopaque) void {
-            const response_ctx: *http.AsyncResponseContext = @ptrCast(@alignCast(response_ctx_opaque));
+        fn handleRequest(request: http.Request, response_ctx: *http.ResponseContext) void {
             log.info("Received {s} request to {s}", .{ request.method.toString(), request.path });
 
             if (request.query_string) |qs| {
@@ -77,11 +74,6 @@ pub fn main() !void {
                             }
 
                             if (response) |resp| {
-                                log.info("=== External HTTP Response (async) ===", .{});
-                                log.info("Status: {d}", .{resp.status_code});
-                                log.info("Body length: {d} bytes", .{resp.body.len});
-                                log.info("Body preview: {s}", .{resp.body[0..@min(resp.body.len, 200)]});
-                                
                                 // Send the actual external API response back to the client
                                 response_context.respond(@intCast(resp.status_code), resp.body);
                             }
@@ -93,16 +85,16 @@ pub fn main() !void {
                     log.err("Failed to initiate external request: {any}", .{err});
                     response_ctx.respond(500, "Failed to initiate proxy request");
                 };
-                
+
                 // Don't send immediate response - the callback will handle it
                 return;
             }
 
             // Regular response handling
             const response_body = if (std.mem.eql(u8, request.path, "/hello"))
-                "Hello, World! (Async)"
+                "Hello, World!"
             else if (std.mem.eql(u8, request.path, "/"))
-                "Welcome to the Async HTTP server! Try /proxy to see external HTTP requests."
+                "Welcome to the HTTP server! Try /proxy to see external HTTP requests."
             else
                 "Not Found";
 
@@ -129,23 +121,3 @@ pub fn main() !void {
     // Explicitly shutdown the thread pool
     thread_pool.shutdown();
 }
-
-// Example of how you might use this in the main proxy application:
-//
-// fn proxyRequestToBackend(request_data: []const u8) void {
-//     // Instead of direct TCP connection, use the async HTTP interface
-//     async_http.fetchUrl(allocator, &loop, "http://backend-server/api", handleProxyResponse);
-// }
-//
-// fn handleProxyResponse(err: ?async_http.FetchError, response: ?async_http.HttpResponse) void {
-//     if (err) |error_info| {
-//         // Send 502 Bad Gateway to client
-//         sendErrorToClient(502);
-//         return;
-//     }
-//
-//     if (response) |resp| {
-//         // Forward the response back to the client
-//         forwardResponseToClient(resp);
-//     }
-// }

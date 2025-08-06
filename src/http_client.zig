@@ -42,7 +42,6 @@ pub const HttpResponse = struct {
 
 pub const FetchCallback = *const fn (err: ?FetchError, response: ?HttpResponse) void;
 
-// Internal context for managing the async request
 const FetchContext = struct {
     allocator: std.mem.Allocator,
     loop: *xev.Loop,
@@ -186,7 +185,6 @@ pub fn fetch(allocator: std.mem.Allocator, loop: *xev.Loop, url: []const u8, cal
         return;
     };
 
-    // Start async connection
     ctx.socket.?.connect(loop, &ctx.connect_completion, address, FetchContext, ctx, connectCallback);
 }
 

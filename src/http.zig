@@ -6,10 +6,10 @@ pub const HttpMethod = @import("http/method.zig").HttpMethod;
 pub const HttpRequest = @import("http/request.zig").HttpRequest;
 pub const HttpResponse = @import("http/response.zig").HttpResponse;
 
-// Re-export HTTP server functionality (async-only)
+// Re-export HTTP server functionality
 pub const Server = @import("http_server.zig").Server;
-pub const AsyncResponseContext = @import("http_server.zig").AsyncResponseContext;
-pub const AsyncHandlerCallback = @import("http_server.zig").AsyncHandlerCallback;
+pub const ResponseContext = @import("http_server.zig").ResponseContext;
+pub const HandlerCallback = @import("http_server.zig").HandlerCallback;
 
 // Re-export HTTP client functionality
 pub const client = @import("http_client.zig");
@@ -20,3 +20,4 @@ pub const fetch = client.fetch;
 pub const Method = HttpMethod;
 pub const Request = HttpRequest;
 pub const Response = HttpResponse;
+

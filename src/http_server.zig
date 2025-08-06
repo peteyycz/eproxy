@@ -61,13 +61,17 @@ const ConnectionContext = struct {
     }
 };
 
+// Write callback type for ResponseContext
+const WriteCallback = *const fn (ctx: *ConnectionContext, loop: *xev.Loop, socket: xev.TCP, response_bytes: []const u8) void;
+
 // Async response context - holds everything needed to send a response later
-pub const AsyncResponseContext = struct {
+pub const ResponseContext = struct {
     ctx: *ConnectionContext,
     loop: *xev.Loop,
     socket: xev.TCP,
+    write_callback: WriteCallback,
 
-    pub fn respond(self: *AsyncResponseContext, status_code: u16, body: []const u8) void {
+    pub fn respond(self: *ResponseContext, status_code: u16, body: []const u8) void {
         // Prevent double responses
         if (self.ctx.response_sent) {
             log.warn("Attempt to send response twice - ignoring", .{});
@@ -96,21 +100,24 @@ pub const AsyncResponseContext = struct {
         // Clean up self after initiating the write (the write callback will handle connection cleanup)
         defer self.ctx.allocator.destroy(self);
 
-        self.socket.write(self.loop, &self.ctx.write_completion, .{ .slice = response_bytes }, ConnectionContext, self.ctx, Server.writeCallback);
+        // Use the provided write callback instead of directly calling Server.writeCallback
+        self.write_callback(self.ctx, self.loop, self.socket, response_bytes);
     }
 };
 
-// Async handler callback type - use anyopaque to break circular dependency
-pub const AsyncHandlerCallback = *const fn (request: HttpRequest, response_ctx: *anyopaque) void;
+// Generic handler callback type - type-safe alternative to anyopaque
+pub fn HandlerCallback(comptime ResponseType: type) type {
+    return *const fn (request: HttpRequest, response_ctx: *ResponseType) void;
+}
 
 pub const Server = struct {
     loop: *xev.Loop,
     allocator: std.mem.Allocator,
-    handler: AsyncHandlerCallback,
+    handler: HandlerCallback(ResponseContext),
     tcp_server: ?xev.TCP,
     accept_completion: xev.Completion,
 
-    pub fn init(allocator: std.mem.Allocator, loop: *xev.Loop, handler: AsyncHandlerCallback) Server {
+    pub fn init(allocator: std.mem.Allocator, loop: *xev.Loop, handler: HandlerCallback(ResponseContext)) Server {
         return Server{
             .loop = loop,
             .allocator = allocator,
@@ -125,8 +132,6 @@ pub const Server = struct {
         self.tcp_server = try xev.TCP.init(addr);
         try self.tcp_server.?.bind(addr);
         try self.tcp_server.?.listen(128);
-
-        log.info("HTTP server listening on 127.0.0.1:{d}", .{port});
 
         // Start accepting connections
         self.tcp_server.?.accept(self.loop, &self.accept_completion, Server, self, acceptCallback);
@@ -301,21 +306,26 @@ pub const Server = struct {
     fn handleRequest(ctx: *ConnectionContext, loop: *xev.Loop, socket: xev.TCP, request: HttpRequest) void {
         log.info("Handling {s} request to {s}", .{ request.method.toString(), request.path });
 
-        // Heap-allocate async response context to prevent stack invalidation
-        const response_ctx = ctx.allocator.create(AsyncResponseContext) catch {
-            log.err("Failed to allocate AsyncResponseContext", .{});
+        // Heap-allocate response context to prevent stack invalidation
+        const response_ctx = ctx.allocator.create(ResponseContext) catch {
+            log.err("Failed to allocate ResponseContext", .{});
             sendErrorResponse(ctx, loop, socket, 500);
             return;
         };
 
-        response_ctx.* = AsyncResponseContext{
+        response_ctx.* = ResponseContext{
             .ctx = ctx,
             .loop = loop,
             .socket = socket,
+            .write_callback = writeResponse,
         };
 
-        // Call the async handler (cast to anyopaque to break circular dependency)
-        ctx.server.handler(request, @ptrCast(response_ctx));
+        // Call the handler with type-safe pointer
+        ctx.server.handler(request, response_ctx);
+    }
+
+    fn writeResponse(ctx: *ConnectionContext, loop: *xev.Loop, socket: xev.TCP, response_bytes: []const u8) void {
+        socket.write(loop, &ctx.write_completion, .{ .slice = response_bytes }, ConnectionContext, ctx, writeCallback);
     }
 
     fn sendErrorResponse(ctx: *ConnectionContext, loop: *xev.Loop, socket: xev.TCP, status_code: u16) void {
@@ -399,4 +409,3 @@ pub const Server = struct {
         return .disarm;
     }
 };
-
