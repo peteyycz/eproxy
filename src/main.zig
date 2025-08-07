@@ -20,14 +20,26 @@ pub fn main() !void {
     defer loop.deinit();
 
     try fetch.doFetch(allocator, &loop, eproxy.Request{ .method = .GET, .host = "httpbin.org", .pathname = "/get" }, struct {
-        // Callback to handle the result of the fetch operation
-        pub fn callback(result: fetch.Error!std.ArrayList(u8)) void {
+        pub fn callback(a: std.mem.Allocator, l: *xev.Loop, result: fetch.Error!std.ArrayList(u8)) void {
             const response = result catch |err| {
                 log.err("Fetch failed: {}", .{err});
                 return;
             };
-            log.info("Fetch completed successfully\n{s}", .{response.items});
-            response.deinit();
+            defer response.deinit();
+            log.info("Fetch completed successfully\n{}", .{response.items.len});
+
+            fetch.doFetch(a, l, eproxy.Request{ .method = .GET, .host = "httpbin.org", .pathname = "/get" }, struct {
+                pub fn callback(_: std.mem.Allocator, _: *xev.Loop, inner_result: fetch.Error!std.ArrayList(u8)) void {
+                    const inner_response = inner_result catch |err| {
+                        log.err("Fetch failed: {}", .{err});
+                        return;
+                    };
+                    defer inner_response.deinit();
+                    log.info("Fetch completed successfully\n{}", .{inner_response.items.len});
+                }
+            }.callback) catch |err| {
+                log.err("Error in nested fetch: {}", .{err});
+            };
         }
     }.callback);
 
