@@ -27,6 +27,41 @@ pub const Request = struct {
     pub fn allocPrint(self: *const Request, allocator: std.mem.Allocator) ![]const u8 {
         return std.fmt.allocPrint(allocator, request_template, .{ self.method.print(), self.pathname, self.host });
     }
+
+    pub const ParseError = error{
+        InvalidUrl,
+        UnsupportedScheme,
+        EmptyHost,
+    };
+
+    pub fn fromUrl(method: Method, url: []const u8) ParseError!Request {
+        if (url.len == 0) return ParseError.InvalidUrl;
+
+        var remaining = url;
+
+        // Check and remove scheme
+        if (std.mem.startsWith(u8, url, "http://")) {
+            remaining = url[7..];
+        } else if (std.mem.startsWith(u8, url, "https://")) {
+            return ParseError.UnsupportedScheme; // For now
+        } else {
+            // Assume http:// if no scheme
+        }
+
+        if (remaining.len == 0) return ParseError.EmptyHost;
+
+        // Split host and path
+        if (std.mem.indexOf(u8, remaining, "/")) |slash_idx| {
+            const host = remaining[0..slash_idx];
+            if (host.len == 0) return ParseError.EmptyHost;
+
+            const pathname = remaining[slash_idx..];
+            return Request.init(method, host, pathname);
+        } else {
+            // No path, use root
+            return Request.init(method, remaining, "/");
+        }
+    }
 };
 
 pub fn resolveAddress(

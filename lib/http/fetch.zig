@@ -34,6 +34,8 @@ pub const Error = error{
 };
 
 const Callback = *const fn (
+    allocator: std.mem.Allocator,
+    loop: *xev.Loop,
     result: Error!std.ArrayList(u8),
 ) void;
 
@@ -81,13 +83,13 @@ pub fn connectCallback(
     const ctx = ctx_opt orelse return .disarm;
     result catch {
         closeSocket(ctx, loop, socket);
-        ctx.callback(Error.ConnectionFailed);
+        ctx.callback(ctx.allocator, loop, Error.ConnectionFailed);
         return .disarm;
     };
 
     ctx.request_string = ctx.request.allocPrint(ctx.allocator) catch {
         closeSocket(ctx, loop, socket);
-        ctx.callback(Error.OutOfMemory);
+        ctx.callback(ctx.allocator, loop, Error.OutOfMemory);
         return .disarm;
     };
 
@@ -116,7 +118,7 @@ fn writeCallback(
     const ctx = ctx_opt orelse return .disarm;
     _ = result catch {
         closeSocket(ctx, loop, socket);
-        ctx.callback(Error.WriteError);
+        ctx.callback(ctx.allocator, loop, Error.WriteError);
         return .disarm;
     };
 
@@ -140,10 +142,10 @@ fn readCallback(ctx_opt: ?*Context, loop: *xev.Loop, _: *xev.Completion, socket:
             // Not sure if the callback should be called before shutdown?
             const response_buffer = ctx.response_buffer;
             socket.shutdown(loop, &ctx.shutdown_completion, Context, ctx, shutdownCallback);
-            ctx.callback(response_buffer);
+            ctx.callback(ctx.allocator, loop, response_buffer);
         } else {
             closeSocket(ctx, loop, socket);
-            ctx.callback(Error.ReadError);
+            ctx.callback(ctx.allocator, loop, Error.ReadError);
         }
         return .disarm;
     };
@@ -152,7 +154,7 @@ fn readCallback(ctx_opt: ?*Context, loop: *xev.Loop, _: *xev.Completion, socket:
     const response_data = read_buffer.slice[0..bytes_read];
     ctx.response_buffer.appendSlice(response_data) catch {
         closeSocket(ctx, loop, socket);
-        ctx.callback(Error.OutOfMemory);
+        ctx.callback(ctx.allocator, loop, Error.OutOfMemory);
         return .disarm;
     };
 
