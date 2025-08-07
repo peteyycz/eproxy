@@ -2,6 +2,7 @@ const std = @import("std");
 const log = std.log;
 const xev = @import("xev");
 const eproxy = @import("eproxy");
+const fetch = eproxy.fetch;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -19,11 +20,10 @@ pub fn main() !void {
     defer loop.deinit();
 
     const address = try eproxy.resolveAddress(allocator, "httpbin.org");
-
     const socket = try xev.TCP.init(address);
-    const fetchContext = try eproxy.fetch.Context.init(allocator, struct {
+    const fetchContext = try fetch.Context.init(allocator, struct {
         // Callback to handle the result of the fetch operation
-        pub fn callback(result: eproxy.fetch.Error!std.ArrayList(u8)) void {
+        pub fn callback(result: fetch.Error!std.ArrayList(u8)) void {
             const response = result catch |err| {
                 log.err("Fetch failed: {}", .{err});
                 return;
@@ -32,7 +32,7 @@ pub fn main() !void {
             response.deinit();
         }
     }.callback);
-    socket.connect(&loop, &fetchContext.connect_completion, address, eproxy.fetch.Context, fetchContext, eproxy.fetch.connectCallback);
+    socket.connect(&loop, &fetchContext.connect_completion, address, fetch.Context, fetchContext, eproxy.fetch.connectCallback);
 
     try loop.run(.until_done);
 }
