@@ -5,7 +5,7 @@ const headers_end_marker = crlf ++ crlf;
 const request_template = "{s} {s} HTTP/1.1" ++ crlf ++ "Host: {s}" ++ crlf ++ "Connection: close" ++ headers_end_marker;
 
 // We only support GET method, but you can extend it to support more methods.
-const Method = enum {
+pub const Method = enum {
     GET,
 
     pub fn print(self: Method) []const u8 {

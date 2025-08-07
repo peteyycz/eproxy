@@ -19,9 +19,7 @@ pub fn main() !void {
     });
     defer loop.deinit();
 
-    const address = try eproxy.resolveAddress(allocator, "httpbin.org");
-    const socket = try xev.TCP.init(address);
-    const fetchContext = try fetch.Context.init(allocator, struct {
+    try fetch.doFetch(allocator, &loop, eproxy.Request{ .method = .GET, .host = "httpbin.org", .pathname = "/get" }, struct {
         // Callback to handle the result of the fetch operation
         pub fn callback(result: fetch.Error!std.ArrayList(u8)) void {
             const response = result catch |err| {
@@ -32,7 +30,6 @@ pub fn main() !void {
             response.deinit();
         }
     }.callback);
-    socket.connect(&loop, &fetchContext.connect_completion, address, fetch.Context, fetchContext, eproxy.fetch.connectCallback);
 
     try loop.run(.until_done);
 }

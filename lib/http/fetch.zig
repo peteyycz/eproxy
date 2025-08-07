@@ -1,7 +1,28 @@
 const std = @import("std");
 const xev = @import("xev");
+const request_module = @import("request.zig");
 
-const Request = @import("request.zig").Request;
+const Request = request_module.Request;
+const resolveAddress = request_module.resolveAddress;
+
+pub fn doFetch(
+    allocator: std.mem.Allocator,
+    loop: *xev.Loop,
+    request: Request,
+    callback: Callback,
+) !void {
+    const ctx = try Context.init(allocator, request, callback);
+    const address = try resolveAddress(allocator, "httpbin.org");
+    const socket = try xev.TCP.init(address);
+    socket.connect(
+        loop,
+        &ctx.connect_completion,
+        address,
+        Context,
+        ctx,
+        connectCallback,
+    );
+}
 
 pub const Error = error{
     ConnectionFailed,
@@ -28,14 +49,16 @@ pub const Context = struct {
 
     allocator: std.mem.Allocator,
 
+    request: Request,
     request_string: []const u8 = undefined,
 
     callback: Callback = undefined,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, callback: Callback) !*Self {
+    pub fn init(allocator: std.mem.Allocator, request: Request, callback: Callback) !*Self {
         const ctx = try allocator.create(Self);
+        ctx.request = request;
         ctx.callback = callback;
         ctx.response_buffer = std.ArrayList(u8).init(allocator);
         ctx.allocator = allocator;
@@ -62,8 +85,7 @@ pub fn connectCallback(
         return .disarm;
     };
 
-    const request = Request.init(.GET, "httpbin.org", "/get");
-    ctx.request_string = request.allocPrint(ctx.allocator) catch {
+    ctx.request_string = ctx.request.allocPrint(ctx.allocator) catch {
         closeSocket(ctx, loop, socket);
         ctx.callback(Error.OutOfMemory);
         return .disarm;
