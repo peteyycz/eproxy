@@ -11,6 +11,7 @@ pub fn main() !void {
     // Initialize libxev event loop
     var thread_pool = xev.ThreadPool.init(.{ .max_threads = 2 });
     defer thread_pool.deinit();
+    defer thread_pool.shutdown();
 
     var loop = try xev.Loop.init(.{
         .thread_pool = &thread_pool,
@@ -22,27 +23,30 @@ pub fn main() !void {
     const socket = try xev.TCP.init(address);
     const fetchContext = try FetchContext.init(allocator, struct {
         // Callback to handle the result of the fetch operation
-        pub fn callback(result: anyerror![]u8) void {
+        pub fn callback(result: FetchError![]u8) void {
             const response = result catch |err| {
                 log.err("Fetch failed: {}", .{err});
                 return;
             };
-            log.info("Fetch completed successfully, response: {s}", .{response});
+            log.info("Fetch completed successfully\n{s}", .{response});
         }
     }.callback);
     socket.connect(&loop, &fetchContext.connect_completion, address, FetchContext, fetchContext, connectCallback);
 
-    // Run the event loop to process all async operations
     try loop.run(.until_done);
-
-    log.info("Loop stopped", .{});
-
-    // Explicitly shutdown the thread pool
-    thread_pool.shutdown();
 }
 
+const FetchError = error{
+    ConnectionFailed,
+    WriteError,
+    ReadError,
+    ShutdownError,
+    OutOfMemory,
+    NoAddressesFound,
+};
+
 const FetchCallback = *const fn (
-    result: anyerror![]u8,
+    result: FetchError![]u8,
 ) void;
 
 const FetchContext = struct {
@@ -87,19 +91,15 @@ fn connectCallback(
     _ = completion;
 
     const ctx = ctx_opt orelse return .disarm;
-    result catch |err| {
-        log.err("Connection failed: {}", .{err});
-        ctx.callback(err);
+    result catch {
+        ctx.callback(FetchError.ConnectionFailed);
         ctx.deinit();
         return .disarm;
     };
 
-    log.info("Connected successfully", .{});
-
     const request = eproxy.Request.init(.GET, "httpbin.org", "/get");
-    ctx.request_string = request.allocPrint(ctx.allocator) catch |err| {
-        log.err("Failed to create request string: {}", .{err});
-        ctx.callback(err);
+    ctx.request_string = request.allocPrint(ctx.allocator) catch {
+        ctx.callback(FetchError.OutOfMemory);
         ctx.deinit();
         return .disarm;
     };
@@ -130,14 +130,11 @@ fn writeCallback(
     _ = write_buffer;
 
     const ctx = ctx_opt orelse return .disarm;
-    const bytes_written = result catch |err| {
-        log.err("Write failed: {}", .{err});
-        ctx.callback(err);
+    _ = result catch {
+        ctx.callback(FetchError.WriteError);
         ctx.deinit();
         return .disarm;
     };
-
-    log.info("Bytes written: {}", .{bytes_written});
 
     socket.read(
         loop,
@@ -156,15 +153,13 @@ fn readCallback(ctx_opt: ?*FetchContext, loop: *xev.Loop, completion: *xev.Compl
 
     const ctx = ctx_opt orelse return .disarm;
     const bytes_read = result catch |err| {
+        // EOF indicates the server has closed the connection
         if (err == xev.ReadError.EOF) {
-            // EOF indicates the server has closed the connection
-            log.info("Response is {s}", .{ctx.response_buffer.items});
             // Not sure if the callback should be called before shutdown?
             ctx.callback(ctx.response_buffer.items);
             socket.shutdown(loop, &ctx.shutdown_completion, FetchContext, ctx, shutdownCallback);
         } else {
-            log.err("Read error: {}", .{err});
-            ctx.callback(err);
+            ctx.callback(FetchError.ReadError);
             ctx.deinit();
         }
         return .disarm;
@@ -173,9 +168,8 @@ fn readCallback(ctx_opt: ?*FetchContext, loop: *xev.Loop, completion: *xev.Compl
     // Process the response here (for simplicity, just logging it)
     const response_data = read_buffer.slice[0..bytes_read];
     log.debug("{} bytes: {s}", .{ bytes_read, response_data });
-    ctx.response_buffer.appendSlice(response_data) catch |err| {
-        log.err("Failed to append response data: {}", .{err});
-        ctx.callback(err);
+    ctx.response_buffer.appendSlice(response_data) catch {
+        ctx.callback(FetchError.OutOfMemory);
         ctx.deinit();
         return .disarm;
     };
@@ -189,14 +183,11 @@ fn shutdownCallback(ctx_opt: ?*FetchContext, loop: *xev.Loop, completion: *xev.C
     _ = socket;
 
     const ctx = ctx_opt orelse return .disarm;
-    result catch |err| {
-        log.err("Shutdown failed: {}", .{err});
+    result catch {
         // No need to call the callback here, as we already did in readCallback
         ctx.deinit();
         return .disarm;
     };
-
-    log.info("Socket shutdown successfully", .{});
 
     ctx.deinit();
     return .disarm;
