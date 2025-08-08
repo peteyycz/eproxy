@@ -84,6 +84,12 @@ test "fromUrl with valid http url" {
     try testing.expectEqualStrings(req.pathname, "/foo");
 }
 
+test "fromUrl with valid http url multiple segments" {
+    const req = try Request.fromUrl(.GET, "http://example.com/foo/bar");
+    try testing.expectEqualStrings(req.host, "example.com");
+    try testing.expectEqualStrings(req.pathname, "/foo/bar");
+}
+
 test "fromUrl with no scheme" {
     const req = try Request.fromUrl(.GET, "example.com/bar");
     try testing.expectEqualStrings(req.host, "example.com");
