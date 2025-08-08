@@ -1,4 +1,5 @@
 const std = @import("std");
+const log = std.log;
 
 // We only support GET method, but you can extend it to support more methods.
 pub const Method = enum {
@@ -11,7 +12,7 @@ pub const Method = enum {
     }
 };
 
-const request_line = "{s} {s} HTTP/1.1";
+const request_line_template = "{s} {s} HTTP/1.1";
 const header_template = "{s}: {s}";
 const crlf = "\r\n";
 
@@ -48,7 +49,7 @@ pub const Request = struct {
         var result = std.ArrayList(u8).init(allocator);
         const writer = result.writer();
 
-        try writer.print(request_line ++ crlf, .{ self.method.print(), self.pathname });
+        try writer.print(request_line_template ++ crlf, .{ self.method.print(), self.pathname });
         var iter = self.headers.iterator();
         while (iter.next()) |header| {
             if (header.value_ptr.*.len == 0) continue; // skip empty headers
@@ -106,6 +107,34 @@ pub const Request = struct {
         }
     }
 };
+
+// TODO: Continue with returning a proper Request type from the parser
+pub fn parseRequest(allocator: std.mem.Allocator, request: []u8) !std.StringHashMap([]const u8) {
+    // This is a very basic request parser, just for demonstration purposes
+    // It should be replaced with a proper HTTP request parser
+    if (request.len == 0) return error.InvalidRequest;
+
+    var request_iterator = std.mem.splitSequence(u8, request[0..], crlf ++ crlf);
+    const headers = request_iterator.next() orelse return error.IncompleteRequest;
+    _ = request_iterator.peek() orelse return error.IncompleteRequest;
+
+    var headers_iterator = std.mem.tokenizeSequence(u8, headers, crlf);
+    const request_line = headers_iterator.next() orelse return error.IncompleteRequest;
+    var request_parts_iterator = std.mem.splitSequence(u8, request_line, " ");
+    const method = request_parts_iterator.next() orelse return error.InvalidRequest;
+    const pathname = request_parts_iterator.next() orelse return error.InvalidRequest;
+    const version = request_parts_iterator.next() orelse return error.InvalidRequest;
+
+    var headers_hash = std.StringHashMap([]const u8).init(allocator);
+    log.info("{s} {s} {s}", .{ method, pathname, version });
+    while (headers_iterator.next()) |header| {
+        var header_parts_iterator = std.mem.splitSequence(u8, header, ": ");
+        const key = header_parts_iterator.next() orelse return error.InvalidRequest;
+        const value = header_parts_iterator.next() orelse return error.InvalidRequest;
+        try headers_hash.put(key, value);
+    }
+    return headers_hash;
+}
 
 pub fn resolveAddress(
     allocator: std.mem.Allocator,
