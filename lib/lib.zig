@@ -5,3 +5,7 @@ pub const fetch = @import("http/fetch.zig");
 
 pub const Request = request.Request;
 pub const resolveAddress = request.resolveAddress;
+
+test {
+    @import("std").testing.refAllDecls(@This());
+}
