@@ -151,7 +151,7 @@ fn readCallback(
         if (err == xev.ReadError.EOF) {
             // Not sure if the callback should be called before shutdown?
             const response_buffer = ctx.response_buffer;
-            socket.shutdown(loop, &ctx.shutdown_completion, Context, ctx, shutdownCallback);
+            util.shutdownSocket(Context, ctx, loop, socket);
             ctx.callback(ctx.allocator, loop, response_buffer);
         } else {
             util.closeSocket(Context, ctx, loop, socket);
@@ -161,8 +161,8 @@ fn readCallback(
     };
 
     // Process the response here (for simplicity, just logging it)
-    const response_data = read_buffer.slice[0..bytes_read];
-    ctx.response_buffer.appendSlice(response_data) catch {
+    const response_chunk = read_buffer.slice[0..bytes_read];
+    ctx.response_buffer.appendSlice(response_chunk) catch {
         util.closeSocket(Context, ctx, loop, socket);
         ctx.callback(ctx.allocator, loop, Error.OutOfMemory);
         return .disarm;
@@ -171,14 +171,3 @@ fn readCallback(
     return .rearm;
 }
 
-fn shutdownCallback(ctx_opt: ?*Context, _: *xev.Loop, _: *xev.Completion, _: xev.TCP, result: xev.ShutdownError!void) xev.CallbackAction {
-    const ctx = ctx_opt orelse return .disarm;
-    result catch {
-        // No need to call the callback here, as we already did in readCallback
-        ctx.deinit();
-        return .disarm;
-    };
-
-    ctx.deinit();
-    return .disarm;
-}
