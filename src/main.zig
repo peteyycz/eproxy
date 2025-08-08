@@ -19,7 +19,8 @@ pub fn main() !void {
     });
     defer loop.deinit();
 
-    try fetch.doFetch(allocator, &loop, eproxy.Request{ .method = .GET, .host = "httpbin.org", .pathname = "/get" }, struct {
+    const request = try eproxy.Request.allocFromUrl(allocator, .GET, "http://httpbin.org/get");
+    try fetch.doFetch(allocator, &loop, request, struct {
         pub fn callback(a: std.mem.Allocator, l: *xev.Loop, result: fetch.Error!std.ArrayList(u8)) void {
             const response = result catch |err| {
                 log.err("Fetch failed: {}", .{err});
@@ -28,7 +29,11 @@ pub fn main() !void {
             defer response.deinit();
             log.info("Fetch completed successfully\n{}", .{response.items.len});
 
-            fetch.doFetch(a, l, eproxy.Request{ .method = .GET, .host = "httpbin.org", .pathname = "/get" }, struct {
+            const r = eproxy.Request.allocFromUrl(a, .GET, "http://httpbin.org/get") catch |err| {
+                log.err("Failed to create request: {}", .{err});
+                return;
+            };
+            fetch.doFetch(a, l, r, struct {
                 pub fn callback(_: std.mem.Allocator, _: *xev.Loop, inner_result: fetch.Error!std.ArrayList(u8)) void {
                     const inner_response = inner_result catch |err| {
                         log.err("Fetch failed: {}", .{err});

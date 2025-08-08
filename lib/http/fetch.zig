@@ -12,7 +12,8 @@ pub fn doFetch(
     callback: Callback,
 ) !void {
     const ctx = try Context.init(allocator, request, callback);
-    const address = try resolveAddress(allocator, "httpbin.org");
+    const host = ctx.request.getHost() orelse return Error.NoAddressesFound;
+    const address = try resolveAddress(allocator, host);
     const socket = try xev.TCP.init(address);
     socket.connect(
         loop,
@@ -69,6 +70,7 @@ pub const Context = struct {
 
     pub fn deinit(self: *Self) void {
         self.allocator.free(self.request_string);
+        self.request.deinit();
         self.allocator.destroy(self);
     }
 };
@@ -134,7 +136,14 @@ fn writeCallback(
     return .disarm;
 }
 
-fn readCallback(ctx_opt: ?*Context, loop: *xev.Loop, _: *xev.Completion, socket: xev.TCP, read_buffer: xev.ReadBuffer, result: xev.ReadError!usize) xev.CallbackAction {
+fn readCallback(
+    ctx_opt: ?*Context,
+    loop: *xev.Loop,
+    _: *xev.Completion,
+    socket: xev.TCP,
+    read_buffer: xev.ReadBuffer,
+    result: xev.ReadError!usize,
+) xev.CallbackAction {
     const ctx = ctx_opt orelse return .disarm;
     const bytes_read = result catch |err| {
         // EOF indicates the server has closed the connection
