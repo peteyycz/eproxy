@@ -1,9 +1,5 @@
 const std = @import("std");
 
-const crlf = "\r\n";
-const headers_end_marker = crlf ++ crlf;
-const request_template = "{s} {s} HTTP/1.1" ++ crlf ++ "Host: {s}" ++ crlf ++ "Connection: close" ++ headers_end_marker;
-
 // We only support GET method, but you can extend it to support more methods.
 pub const Method = enum {
     GET,
@@ -15,17 +11,53 @@ pub const Method = enum {
     }
 };
 
-pub const Request = struct {
-    host: []const u8,
-    pathname: []const u8,
-    method: Method = .GET,
+const request_line = "{s} {s} HTTP/1.1";
+const header_template = "{s}: {s}";
+const crlf = "\r\n";
 
-    pub fn init(method: Method, host: []const u8, pathname: []const u8) Request {
-        return Request{ .method = method, .host = host, .pathname = pathname };
+pub const Request = struct {
+    allocator: std.mem.Allocator,
+
+    method: Method = .GET,
+    pathname: []const u8,
+    headers: std.StringHashMap([]const u8),
+
+    pub fn init(allocator: std.mem.Allocator, method: Method, pathname: []const u8, host: []const u8) !Request {
+        var headers = std.StringHashMap([]const u8).init(allocator);
+        // Do not support keepalive for now
+        try headers.put("Connection", "close");
+        try headers.put("Host", host);
+        return Request{
+            .method = method,
+            .headers = headers,
+            .pathname = pathname,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *Request) void {
+        self.headers.deinit();
+    }
+
+    pub fn getHost(self: *const Request) ?[]const u8 {
+        return self.headers.get("Host");
     }
 
     pub fn allocPrint(self: *const Request, allocator: std.mem.Allocator) ![]const u8 {
-        return std.fmt.allocPrint(allocator, request_template, .{ self.method.print(), self.pathname, self.host });
+        // Well this is not zero copy but getting there
+        var result = std.ArrayList(u8).init(allocator);
+        const writer = result.writer();
+
+        try writer.print(request_line ++ crlf, .{ self.method.print(), self.pathname });
+        var iter = self.headers.iterator();
+        while (iter.next()) |header| {
+            if (header.value_ptr.*.len == 0) continue; // skip empty headers
+            try writer.print(header_template ++ crlf, .{ header.key_ptr.*, header.value_ptr.* });
+        }
+
+        try writer.writeAll(crlf); // End of headers
+
+        return result.toOwnedSlice();
     }
 
     pub const ParseError = error{
@@ -34,7 +66,8 @@ pub const Request = struct {
         EmptyHost,
     };
 
-    pub fn fromUrl(method: Method, url: []const u8) ParseError!Request {
+    // We should probably consider copying the URL to avoid lifetime issues
+    pub fn allocFromUrl(allocator: std.mem.Allocator, method: Method, url: []const u8) !Request {
         if (url.len == 0) return ParseError.InvalidUrl;
 
         var remaining = url;
@@ -56,10 +89,20 @@ pub const Request = struct {
             if (host.len == 0) return ParseError.EmptyHost;
 
             const pathname = remaining[slash_idx..];
-            return Request.init(method, host, pathname);
+            return Request.init(
+                allocator, // Use default allocator
+                method,
+                pathname,
+                host,
+            );
         } else {
             // No path, use root
-            return Request.init(method, remaining, "/");
+            return Request.init(
+                allocator, // Use default allocator
+                method,
+                "/",
+                remaining,
+            );
         }
     }
 };
@@ -78,35 +121,101 @@ pub fn resolveAddress(
 
 const testing = std.testing;
 
-test "fromUrl with valid http url" {
-    const req = try Request.fromUrl(.GET, "http://example.com/foo");
-    try testing.expectEqualStrings(req.host, "example.com");
+test "Request.allocFromUrl with valid http url" {
+    const allocator = std.testing.allocator;
+    var req = try Request.allocFromUrl(allocator, .GET, "http://example.com/foo");
+    defer req.deinit();
+    const host = req.headers.get("Host") orelse unreachable;
+    try testing.expectEqualStrings(host, "example.com");
     try testing.expectEqualStrings(req.pathname, "/foo");
 }
 
-test "fromUrl with no scheme" {
-    const req = try Request.fromUrl(.GET, "example.com/bar");
-    try testing.expectEqualStrings(req.host, "example.com");
+test "Request.allocFromUrl with valid http url multiple segments" {
+    const allocator = std.testing.allocator;
+    var req = try Request.allocFromUrl(allocator, .GET, "http://example.com/foo/bar");
+    defer req.deinit();
+    const host = req.headers.get("Host") orelse unreachable;
+    try testing.expectEqualStrings(host, "example.com");
+    try testing.expectEqualStrings(req.pathname, "/foo/bar");
+}
+
+test "Request.allocFromUrl with no scheme" {
+    const allocator = std.testing.allocator;
+    var req = try Request.allocFromUrl(allocator, .GET, "example.com/bar");
+    defer req.deinit();
+    const host = req.headers.get("Host") orelse unreachable;
+    try testing.expectEqualStrings(host, "example.com");
     try testing.expectEqualStrings(req.pathname, "/bar");
 }
 
-test "fromUrl with https" {
-    const err = Request.fromUrl(.GET, "https://example.com/");
+test "Request.allocFromUrl with https" {
+    const allocator = std.testing.allocator;
+    const err = Request.allocFromUrl(allocator, .GET, "https://example.com/");
     try testing.expectError(Request.ParseError.UnsupportedScheme, err);
 }
 
-test "fromUrl with empty url" {
-    const err = Request.fromUrl(.GET, "");
+test "Request.allocFromUrl with empty url" {
+    const allocator = std.testing.allocator;
+    const err = Request.allocFromUrl(allocator, .GET, "");
     try testing.expectError(Request.ParseError.InvalidUrl, err);
 }
 
-test "fromUrl with no path" {
-    const req = try Request.fromUrl(.GET, "example.com");
-    try testing.expectEqualStrings(req.host, "example.com");
+test "Request.allocFromUrl with no path" {
+    const allocator = std.testing.allocator;
+    var req = try Request.allocFromUrl(allocator, .GET, "example.com");
+    defer req.deinit();
+    const host = req.headers.get("Host") orelse unreachable;
+    try testing.expectEqualStrings(host, "example.com");
     try testing.expectEqualStrings(req.pathname, "/");
 }
 
-test "fromUrl with empty host" {
-    const err = Request.fromUrl(.GET, "http:///foo");
+test "Request.allocFromUrl with empty host" {
+    const allocator = std.testing.allocator;
+    const err = Request.allocFromUrl(allocator, .GET, "http:///foo");
     try testing.expectError(Request.ParseError.EmptyHost, err);
+}
+
+test "Request.allocPrint with basic request" {
+    const allocator = std.testing.allocator;
+    var req = try Request.allocFromUrl(allocator, .GET, "http://example.com/test");
+    defer req.deinit();
+
+    const request_str = try req.allocPrint(allocator);
+    defer allocator.free(request_str);
+
+    const expected =
+        "GET /test HTTP/1.1\r\n" ++
+        "Connection: close\r\n" ++
+        "Host: example.com\r\n\r\n";
+    try testing.expectEqualStrings(expected, request_str);
+}
+
+test "Request.allocPrint with root path" {
+    const allocator = std.testing.allocator;
+    var req = try Request.allocFromUrl(allocator, .GET, "http://api.example.com");
+    defer req.deinit();
+
+    const request_str = try req.allocPrint(allocator);
+    defer allocator.free(request_str);
+
+    const expected =
+        "GET / HTTP/1.1\r\n" ++
+        "Connection: close\r\n" ++
+        "Host: api.example.com\r\n\r\n";
+    try testing.expectEqualStrings(expected, request_str);
+}
+
+test "Request.allocPrint with complex path" {
+    const allocator = std.testing.allocator;
+    var req = try Request.allocFromUrl(allocator, .GET, "http://example.com/api/v1/users?id=123");
+    defer req.deinit();
+
+    const request_str = try req.allocPrint(allocator);
+    defer allocator.free(request_str);
+
+    const expected =
+        "GET /api/v1/users?id=123 HTTP/1.1\r\n" ++
+        "Connection: close\r\n" ++
+        "Host: example.com\r\n\r\n";
+    try testing.expectEqualStrings(expected, request_str);
 }
