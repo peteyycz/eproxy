@@ -20,10 +20,6 @@ pub const Request = struct {
     pathname: []const u8,
     method: Method = .GET,
 
-    pub fn init(method: Method, host: []const u8, pathname: []const u8) Request {
-        return Request{ .method = method, .host = host, .pathname = pathname };
-    }
-
     pub fn allocPrint(self: *const Request, allocator: std.mem.Allocator) ![]const u8 {
         return std.fmt.allocPrint(allocator, request_template, .{ self.method.print(), self.pathname, self.host });
     }
@@ -56,10 +52,18 @@ pub const Request = struct {
             if (host.len == 0) return ParseError.EmptyHost;
 
             const pathname = remaining[slash_idx..];
-            return Request.init(method, host, pathname);
+            return Request{
+                .method = method,
+                .host = host,
+                .pathname = pathname,
+            };
         } else {
             // No path, use root
-            return Request.init(method, remaining, "/");
+            return Request{
+                .method = method,
+                .host = remaining,
+                .pathname = "/",
+            };
         }
     }
 };
