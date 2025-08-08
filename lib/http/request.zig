@@ -75,3 +75,38 @@ pub fn resolveAddress(
     }
     return address_list.addrs[0];
 }
+
+const testing = std.testing;
+
+test "fromUrl with valid http url" {
+    const req = try Request.fromUrl(.GET, "http://example.com/foo");
+    try testing.expectEqualStrings(req.host, "example.com");
+    try testing.expectEqualStrings(req.pathname, "/foo");
+}
+
+test "fromUrl with no scheme" {
+    const req = try Request.fromUrl(.GET, "example.com/bar");
+    try testing.expectEqualStrings(req.host, "example.com");
+    try testing.expectEqualStrings(req.pathname, "/bar");
+}
+
+test "fromUrl with https" {
+    const err = Request.fromUrl(.GET, "https://example.com/");
+    try testing.expectError(Request.ParseError.UnsupportedScheme, err);
+}
+
+test "fromUrl with empty url" {
+    const err = Request.fromUrl(.GET, "");
+    try testing.expectError(Request.ParseError.InvalidUrl, err);
+}
+
+test "fromUrl with no path" {
+    const req = try Request.fromUrl(.GET, "example.com");
+    try testing.expectEqualStrings(req.host, "example.com");
+    try testing.expectEqualStrings(req.pathname, "/");
+}
+
+test "fromUrl with empty host" {
+    const err = Request.fromUrl(.GET, "http:///foo");
+    try testing.expectError(Request.ParseError.EmptyHost, err);
+}

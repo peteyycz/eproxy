@@ -44,7 +44,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    
+
     // Set log level for the executable
     const options = b.addOptions();
     options.addOption(std.log.Level, "log_level", log_level);
