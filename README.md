@@ -5,7 +5,7 @@
 [![Zig](https://img.shields.io/badge/Zig-0.14+-orange.svg)](https://ziglang.org/)
 [![Performance](https://img.shields.io/badge/performance-blazing%20fast-red.svg)](#benchmarks)
 
-EProxy is a **lightning-fast**, **memory-efficient** HTTP proxy server engineered from the ground up in Zig. Built on the high-performance libxev event loop, it delivers **unmatched throughput** and **ultra-low latency** for production workloads.
+EProxy is a **lightning-fast**, **memory-inefficient** HTTP proxy server engineered from almost the ground up in Zig. Built on the high-performance libxev event loop, it delivers **unmatched throughput** and **ultra-low latency** for all your non-production needs.
 
 Don't take anything too seriously, this is a **work in progress** and **not for production use**. It's more of a
 playground for me to learn Zig and libxev, but it might be useful for you if you want to see how to build an HTTP proxy
@@ -14,11 +14,9 @@ server in Zig.
 ## ✨ Features
 
 - 🚀 **Blazingly Fast**: Built with Zig's non-zero-cost abstractions and manual memory management
-- ⚡ **Super Performant**: Async I/O with libxev event loop for maximum throughput
 - 🔥 **Memory Efficient**: Arena allocators are cool
 - 🌊 **Async by Design**: Non-blocking request handlers with callback-based responses
 - 🛡️ **Production Ready**: If you're brave enough
-- 🔧 **Zero Dependencies**: I just couldn't find any
 
 ## 🚀 Performance
 
@@ -43,34 +41,10 @@ zig build
 ./zig-out/bin/eproxy
 ```
 
-The server will start on `http://localhost:8080` with the following endpoints:
-
-- `/` - Welcome message
-- `/hello` - Simple greeting
-- `/proxy` - External HTTP request proxy demonstration
-
-
 ### Benchmarks
 
 Trust me bro.
 
-```bash
-# Basic load test (replace with your actual benchmarks)
-wrk -t4 -c100 -d30s http://localhost:8080/hello
-```
-
-*Benchmarks coming soon...*
-
-## 🏗️ Architecture
-
-EProxy follows a **modern async architecture**:
-
-```
-┌─────────────────┐    ┌─────────────────────────────────┐    ┌─────────────────────────────────────────┐
-│   Client        │───▶│ Something mitchellh has written │───▶│   Making fucking requests Upstream      │
-│   Requests      │    │         (Event Loop)            │    │            Services                     │
-└─────────────────┘    └─────────────────────────────────┘    └─────────────────────────────────────────┘
-```
 ## 🛠️ Development
 
 ### Prerequisites
@@ -102,18 +76,6 @@ We welcome contributions! Here's how to get started:
 6. Push to the branch (`git push origin feature/amazing-feature`)
 7. Open a Pull Request
 
-### Areas for Contribution
-
-- [ ] HTTP/2 support
-- [ ] WebSocket proxying
-- [ ] Load balancing algorithms
-- [ ] Metrics and monitoring
-- [ ] Configuration file support
-- [ ] SSL/TLS termination
-- [ ] Rate limiting
-- [ ] Caching layer
-- [ ] Literally anywhere you think it can be improved
-
 ## 📄 License
 
 This project is licensed under a License which I have not decided yet.
@@ -125,16 +87,12 @@ This project is licensed under a License which I have not decided yet.
 
 ## 📈 Roadmap
 
-- [x] Basic HTTP server functionality
-- [x] Async request handling
-- [x] HTTP client for upstream requests
-- [ ] HTTP/2 support
-- [ ] WebSocket proxying
-- [ ] Load balancing
+- [ ] Basic HTTP server functionality
 - [ ] Configuration management
+- [ ] Caching layer
+- [ ] Rate limiting
 - [ ] Metrics and observability
-- [ ] Docker containerization
-- [ ] Kubernetes deployment
+- [ ] WebSocket proxying
 
 ---
 
