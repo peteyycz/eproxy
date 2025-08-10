@@ -59,14 +59,16 @@ fn serverAcceptCallback(
     return .rearm;
 }
 
-const read_buffer_size = 10;
+const chunk_size = 10; // 4 KiB read buffer
 
 const ClientContext = struct {
     allocator: std.mem.Allocator,
     loop: *xev.Loop,
 
-    read_buffer: [read_buffer_size]u8 = undefined,
+    read_buffer: [chunk_size]u8 = undefined,
     request_buffer: std.ArrayList(u8),
+
+    bytes_written: usize = 0,
 
     read_completion: xev.Completion = undefined,
     write_completion: xev.Completion = undefined,
@@ -78,6 +80,7 @@ const ClientContext = struct {
         ctx.request_buffer = std.ArrayList(u8).init(allocator);
         ctx.allocator = allocator;
         ctx.loop = loop;
+        ctx.bytes_written = 0;
         return ctx;
     }
 
@@ -89,12 +92,13 @@ const ClientContext = struct {
 
 // TODO: move this to utils and use it
 const response = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\n\r\nHello, World!";
+// const response = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: keep-alive\n\r\nHello, World!";
 
 fn clientReadCallback(ctx_opt: ?*ClientContext, loop: *xev.Loop, _: *xev.Completion, socket: xev.TCP, read_buffer: xev.ReadBuffer, r: xev.ReadError!usize) xev.CallbackAction {
     const ctx = ctx_opt orelse return .disarm;
     const bytes_read = r catch |err| switch (err) {
         xev.ReadError.EOF => {
-            log.info("Client closed the connection, because I asked it do to so probably", .{});
+            log.debug("Client closed the connection, because I asked it do to so probably", .{});
             util.closeSocket(ClientContext, ctx, loop, socket);
             return .disarm;
         },
@@ -111,7 +115,9 @@ fn clientReadCallback(ctx_opt: ?*ClientContext, loop: *xev.Loop, _: *xev.Complet
         return .disarm;
     };
 
-    var headers = parseRequest(ctx.allocator, ctx.request_buffer.items) catch |err| switch (err) {
+    // TODO: In a keepalive connection the buffer can grow indefinitely, so we should keep track of only the last
+    // request
+    var request = parseRequest(ctx.allocator, ctx.request_buffer.items) catch |err| switch (err) {
         error.IncompleteRequest => {
             return .rearm;
         },
@@ -120,28 +126,31 @@ fn clientReadCallback(ctx_opt: ?*ClientContext, loop: *xev.Loop, _: *xev.Complet
             return .disarm;
         },
     };
-    defer headers.deinit();
+    defer request.deinit();
+    log.debug("Received request: {s}", .{request.pathname});
 
-    const host = headers.get("Host") orelse return .disarm;
-    log.info("Received request for host: {s}", .{host});
-    const content_length = headers.get("Content-Length") orelse "0";
-    log.info("Content-Length: {s}", .{content_length});
-    // TODO: VALIDATION e.g. Validate that the body length matches the Content-Length header
+    const write_buffer = response[0..@min(response.len, chunk_size)];
+    socket.write(loop, &ctx.write_completion, .{ .slice = write_buffer }, ClientContext, ctx, clientWriteCallback);
 
-    socket.write(loop, &ctx.write_completion, .{ .slice = response }, ClientContext, ctx, clientWriteCallback);
-
+    // This is only needed for keepalive connections, so we can read the next request
     return .rearm;
 }
 
 // Right now we don't close the connection after the write but wait for the client to close the connection
 fn clientWriteCallback(ctx_opt: ?*ClientContext, loop: *xev.Loop, _: *xev.Completion, socket: xev.TCP, _: xev.WriteBuffer, r: xev.WriteError!usize) xev.CallbackAction {
-    _ = socket;
-    _ = loop;
-    _ = ctx_opt orelse return .disarm;
-    _ = r catch {
+    const ctx = ctx_opt orelse return .disarm;
+    const bytes_written = r catch {
         return .disarm;
     };
 
-    // TODO: Send data in chunks with using .rearm and keep track of the writing state
+    ctx.bytes_written += bytes_written;
+    if (ctx.bytes_written >= response.len) {
+        return .disarm;
+    }
+    const from = ctx.bytes_written;
+    const to = @min(ctx.bytes_written + chunk_size, response.len);
+    const write_buffer = response[from..to];
+    socket.write(loop, &ctx.write_completion, .{ .slice = write_buffer }, ClientContext, ctx, clientWriteCallback);
+
     return .disarm;
 }

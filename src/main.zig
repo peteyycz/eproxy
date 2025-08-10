@@ -11,7 +11,7 @@ pub fn main() !void {
     defer _ = gpa.deinit();
 
     // Initialize libxev event loop
-    var thread_pool = xev.ThreadPool.init(.{ .max_threads = 2 });
+    var thread_pool = xev.ThreadPool.init(.{ .max_threads = 4 });
     defer thread_pool.deinit();
     defer thread_pool.shutdown();
 
@@ -30,7 +30,7 @@ pub fn main() !void {
     //             return;
     //         };
     //         defer response.deinit();
-    //         log.info("Fetch completed successfully\n{}", .{response.items.len});
+    //         log.debug("Fetch completed successfully\n{}", .{response.items.len});
     //
     //         const r = eproxy.Request.allocFromUrl(a, .GET, "http://httpbin.org/get") catch |err| {
     //             log.err("Failed to create request: {}", .{err});
@@ -43,7 +43,7 @@ pub fn main() !void {
     //                     return;
     //                 };
     //                 defer inner_response.deinit();
-    //                 log.info("Fetch completed successfully\n{}", .{inner_response.items.len});
+    //                 log.debug("Fetch completed successfully\n{}", .{inner_response.items.len});
     //             }
     //         }.callback) catch |err| {
     //             log.err("Error in nested fetch: {}", .{err});

@@ -109,31 +109,47 @@ pub const Request = struct {
 };
 
 // TODO: Continue with returning a proper Request type from the parser
-pub fn parseRequest(allocator: std.mem.Allocator, request: []u8) !std.StringHashMap([]const u8) {
-    // This is a very basic request parser, just for demonstration purposes
-    // It should be replaced with a proper HTTP request parser
+pub fn parseRequest(allocator: std.mem.Allocator, request: []u8) !Request {
     if (request.len == 0) return error.InvalidRequest;
 
     var request_iterator = std.mem.splitSequence(u8, request[0..], crlf ++ crlf);
     const headers = request_iterator.next() orelse return error.IncompleteRequest;
-    _ = request_iterator.peek() orelse return error.IncompleteRequest;
+    const body = request_iterator.next() orelse return error.IncompleteRequest;
 
     var headers_iterator = std.mem.tokenizeSequence(u8, headers, crlf);
     const request_line = headers_iterator.next() orelse return error.IncompleteRequest;
     var request_parts_iterator = std.mem.splitSequence(u8, request_line, " ");
-    const method = request_parts_iterator.next() orelse return error.InvalidRequest;
+    const method_str = request_parts_iterator.next() orelse return error.InvalidRequest;
+    const method = std.meta.stringToEnum(Method, method_str) orelse return error.InvalidRequest;
     const pathname = request_parts_iterator.next() orelse return error.InvalidRequest;
-    const version = request_parts_iterator.next() orelse return error.InvalidRequest;
 
     var headers_hash = std.StringHashMap([]const u8).init(allocator);
-    log.info("{s} {s} {s}", .{ method, pathname, version });
     while (headers_iterator.next()) |header| {
         var header_parts_iterator = std.mem.splitSequence(u8, header, ": ");
         const key = header_parts_iterator.next() orelse return error.InvalidRequest;
         const value = header_parts_iterator.next() orelse return error.InvalidRequest;
         try headers_hash.put(key, value);
     }
-    return headers_hash;
+
+    // TODO: Add further validation for the request
+    if (method == .GET) {
+        if (body.len > 0) {
+            return error.InvalidRequest;
+        }
+    } else {
+        if (headers_hash.get("Content-Length")) |content_length_str| {
+            const content_length = std.fmt.parseInt(u8, content_length_str, 10) orelse return error.InvalidRequest;
+            if (content_length > body.len) {
+                return error.IncompleteRequest;
+            }
+        }
+    }
+    return Request{
+        .allocator = allocator,
+        .method = method,
+        .pathname = pathname,
+        .headers = headers_hash,
+    };
 }
 
 pub fn resolveAddress(
