@@ -1,5 +1,6 @@
 const std = @import("std");
 const log = std.log;
+const HeaderMap = @import("header_map.zig").HeaderMap;
 
 // Extended method support for better HTTP compliance
 pub const Method = enum {
@@ -33,10 +34,10 @@ pub const Request = struct {
 
     method: Method = .GET,
     pathname: []const u8,
-    headers: std.StringHashMap([]const u8),
+    headers: HeaderMap,
 
     pub fn init(allocator: std.mem.Allocator, method: Method, pathname: []const u8, host: []const u8) !Request {
-        var headers = std.StringHashMap([]const u8).init(allocator);
+        var headers = HeaderMap.init(allocator);
         // Do not support keepalive for now
         try headers.put("Connection", "close");
         try headers.put("Host", host);
@@ -167,7 +168,7 @@ pub fn parseRequest(allocator: std.mem.Allocator, request: []u8) ParseRequestErr
         return ParseRequestError.InvalidRequest;
     }
 
-    var headers_hash = std.StringHashMap([]const u8).init(allocator);
+    var headers_hash = HeaderMap.init(allocator);
     var header_count: u32 = 0;
     const max_headers = 100; // Security limit
     const max_header_size = 8192; // 8KB per header
@@ -189,19 +190,13 @@ pub fn parseRequest(allocator: std.mem.Allocator, request: []u8) ParseRequestErr
 
     // Check for required Host header in HTTP/1.1 (case-insensitive)
     if (std.mem.eql(u8, http_version, "HTTP/1.1")) {
-        var found_host = false;
-        var iter = headers_hash.iterator();
-        while (iter.next()) |entry| {
-            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, "host")) {
-                found_host = true;
-                break;
-            }
+        if (!headers_hash.contains("host")) {
+            return ParseRequestError.MissingHostHeader;
         }
-        if (!found_host) return ParseRequestError.MissingHostHeader;
     }
 
     // Validate Content-Length and check for complete body
-    if (getHeaderCaseInsensitive(&headers_hash, "content-length")) |content_length_str| {
+    if (headers_hash.get("content-length")) |content_length_str| {
         const content_length = std.fmt.parseInt(u64, content_length_str, 10) catch return ParseRequestError.InvalidRequest;
 
         // Check if we have received the complete body
@@ -216,7 +211,7 @@ pub fn parseRequest(allocator: std.mem.Allocator, request: []u8) ParseRequestErr
     } else if (method != .GET and method != .HEAD and method != .DELETE) {
         // Non-body-less methods without Content-Length might be incomplete
         // unless they use chunked encoding
-        if (getHeaderCaseInsensitive(&headers_hash, "transfer-encoding")) |encoding| {
+        if (headers_hash.get("transfer-encoding")) |encoding| {
             if (!std.mem.eql(u8, encoding, "chunked")) {
                 return ParseRequestError.UnsupportedTransferEncoding;
             }
@@ -233,16 +228,6 @@ pub fn parseRequest(allocator: std.mem.Allocator, request: []u8) ParseRequestErr
     };
 }
 
-// Helper function for case-insensitive header lookup
-fn getHeaderCaseInsensitive(headers: *const std.StringHashMap([]const u8), key: []const u8) ?[]const u8 {
-    var iter = headers.iterator();
-    while (iter.next()) |entry| {
-        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, key)) {
-            return entry.value_ptr.*;
-        }
-    }
-    return null;
-}
 
 pub fn resolveAddress(
     allocator: std.mem.Allocator,
