@@ -172,7 +172,7 @@ pub fn parseRequest(allocator: std.mem.Allocator, request: []u8) ParseRequestErr
     var headers_hash = HeaderMap.init(allocator);
     var header_count: u32 = 0;
     const max_headers = 100; // Security limit
-    const max_header_size = 8192; // 8KB per header
+    const max_header_size = 8 * 1024; // 8KB per header
 
     while (headers_iterator.next()) |header| {
         header_count += 1;
@@ -228,7 +228,6 @@ pub fn parseRequest(allocator: std.mem.Allocator, request: []u8) ParseRequestErr
         .headers = headers_hash,
     };
 }
-
 
 pub fn resolveAddress(
     allocator: std.mem.Allocator,
