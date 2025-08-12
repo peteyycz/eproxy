@@ -21,45 +21,10 @@ const CaseInsensitiveStringContext = struct {
 /// Case-insensitive HashMap for HTTP headers
 pub const HeaderMap = std.HashMap([]const u8, []const u8, CaseInsensitiveStringContext, std.hash_map.default_max_load_percentage);
 
-/// Initialize a new HeaderMap with the given allocator
-pub fn init(allocator: std.mem.Allocator) HeaderMap {
-    return HeaderMap.init(allocator);
-}
-
-/// Get a header value by key (case-insensitive)
-pub fn get(map: *const HeaderMap, key: []const u8) ?[]const u8 {
-    return map.get(key);
-}
-
-/// Put a header key-value pair (case-insensitive key matching)
-pub fn put(map: *HeaderMap, key: []const u8, value: []const u8) !void {
-    try map.put(key, value);
-}
-
-/// Check if a header exists (case-insensitive)
-pub fn contains(map: *const HeaderMap, key: []const u8) bool {
-    return map.contains(key);
-}
-
-/// Remove a header by key (case-insensitive)
-pub fn remove(map: *HeaderMap, key: []const u8) bool {
-    return map.remove(key);
-}
-
-/// Get an iterator over the headers
-pub fn iterator(map: *const HeaderMap) HeaderMap.Iterator {
-    return map.iterator();
-}
-
-/// Deinitialize the HeaderMap
-pub fn deinit(map: *HeaderMap) void {
-    map.deinit();
-}
-
 const testing = std.testing;
 
 test "HeaderMap case insensitive operations" {
-    var map = init(testing.allocator);
+    var map = HeaderMap.init(testing.allocator);
     defer map.deinit();
 
     // Test put and get with different cases
@@ -92,7 +57,7 @@ test "HeaderMap case insensitive operations" {
 }
 
 test "HeaderMap iterator" {
-    var map = init(testing.allocator);
+    var map = HeaderMap.init(testing.allocator);
     defer map.deinit();
 
     try map.put("Content-Type", "text/html");
