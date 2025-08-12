@@ -2,8 +2,10 @@ const std = @import("std");
 const xev = @import("xev");
 const log = std.log;
 const util = @import("util.zig");
-const parseRequest = @import("request.zig").parseRequest;
+const request = @import("request.zig");
 const HeaderMap = @import("header_map.zig").HeaderMap;
+
+const parseRequest = request.parseRequest;
 
 // TODO: Consider pooling like https://github.com/dylanblokhuis/xev-http/blob/master/src/main.zig
 const Context = struct {
@@ -118,8 +120,8 @@ fn clientReadCallback(ctx_opt: ?*ClientContext, loop: *xev.Loop, _: *xev.Complet
 
     // TODO: In a keepalive connection the buffer can grow indefinitely, so we should keep track of only the last
     // request
-    var request = parseRequest(ctx.allocator, ctx.request_buffer.items) catch |err| switch (err) {
-        @import("request.zig").ParseRequestError.IncompleteRequest => {
+    var req = request.parseRequest(ctx.allocator, ctx.request_buffer.items) catch |err| switch (err) {
+        .ParseRequestError.IncompleteRequest => {
             return .rearm;
         },
         else => {
@@ -127,8 +129,8 @@ fn clientReadCallback(ctx_opt: ?*ClientContext, loop: *xev.Loop, _: *xev.Complet
             return .disarm;
         },
     };
-    defer request.deinit();
-    log.debug("Received request: {s}", .{request.pathname});
+    defer req.deinit();
+    log.debug("Received request: {s}", .{req.pathname});
 
     const write_buffer = response[0..@min(response.len, chunk_size)];
     socket.write(loop, &ctx.write_completion, .{ .slice = write_buffer }, ClientContext, ctx, clientWriteCallback);
