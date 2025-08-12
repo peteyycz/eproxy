@@ -3,6 +3,7 @@ const xev = @import("xev");
 const log = std.log;
 const util = @import("util.zig");
 const parseRequest = @import("request.zig").parseRequest;
+const HeaderMap = @import("header_map.zig").HeaderMap;
 
 // TODO: Consider pooling like https://github.com/dylanblokhuis/xev-http/blob/master/src/main.zig
 const Context = struct {
