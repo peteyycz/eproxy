@@ -131,7 +131,7 @@ pub fn parseRequest(allocator: std.mem.Allocator, request: []u8) !Request {
 
     // Check if we have the complete headers section (double CRLF)
     const headers_end_idx = std.mem.indexOf(u8, request, crlf ++ crlf) orelse return error.IncompleteRequest;
-    
+
     const headers_section = request[0..headers_end_idx];
     const body_start = headers_end_idx + 4; // Skip the double CRLF
     const body = if (body_start < request.len) request[body_start..] else "";
@@ -139,21 +139,21 @@ pub fn parseRequest(allocator: std.mem.Allocator, request: []u8) !Request {
     // Validate that we have at least a request line
     var headers_iterator = std.mem.tokenizeSequence(u8, headers_section, crlf);
     const request_line = headers_iterator.next() orelse return error.IncompleteRequest;
-    
+
     // Parse and validate request line format - must have exactly 3 parts
     var request_parts_iterator = std.mem.splitSequence(u8, request_line, " ");
     const method_str = request_parts_iterator.next() orelse return error.InvalidRequest;
     const pathname = request_parts_iterator.next() orelse return error.InvalidRequest;
     const http_version = request_parts_iterator.next() orelse return error.InvalidRequest;
-    
+
     // Ensure no extra parts in request line
     if (request_parts_iterator.next() != null) return error.InvalidRequest;
-    
+
     // Validate HTTP version
     if (!std.mem.eql(u8, http_version, "HTTP/1.1") and !std.mem.eql(u8, http_version, "HTTP/1.0")) {
         return error.InvalidHttpVersion;
     }
-    
+
     // Validate method
     const method = std.meta.stringToEnum(Method, method_str) orelse return error.InvalidRequest;
 
@@ -166,19 +166,19 @@ pub fn parseRequest(allocator: std.mem.Allocator, request: []u8) !Request {
     var header_count: u32 = 0;
     const max_headers = 100; // Security limit
     const max_header_size = 8192; // 8KB per header
-    
+
     while (headers_iterator.next()) |header| {
         header_count += 1;
         if (header_count > max_headers) return error.TooManyHeaders;
         if (header.len > max_header_size) return error.HeaderTooLarge;
-        
+
         // Find colon separator (more flexible than ": ")
         const colon_idx = std.mem.indexOf(u8, header, ":") orelse return error.InvalidRequest;
         const key = std.mem.trim(u8, header[0..colon_idx], " \t");
-        const value = std.mem.trim(u8, header[colon_idx + 1..], " \t");
-        
+        const value = std.mem.trim(u8, header[colon_idx + 1 ..], " \t");
+
         if (key.len == 0) return error.InvalidRequest;
-        
+
         try headers_hash.put(key, value);
     }
 
@@ -198,12 +198,12 @@ pub fn parseRequest(allocator: std.mem.Allocator, request: []u8) !Request {
     // Validate Content-Length and check for complete body
     if (getHeaderCaseInsensitive(&headers_hash, "content-length")) |content_length_str| {
         const content_length = std.fmt.parseInt(u64, content_length_str, 10) catch return error.InvalidRequest;
-        
+
         // Check if we have received the complete body
         if (content_length > body.len) {
             return error.IncompleteRequest;
         }
-        
+
         // For methods that shouldn't have a body, validate Content-Length is 0
         if ((method == .GET or method == .HEAD or method == .DELETE) and content_length > 0) {
             return error.InvalidRequest;
