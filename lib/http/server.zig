@@ -118,7 +118,7 @@ fn clientReadCallback(ctx_opt: ?*ClientContext, loop: *xev.Loop, _: *xev.Complet
     // TODO: In a keepalive connection the buffer can grow indefinitely, so we should keep track of only the last
     // request
     var request = parseRequest(ctx.allocator, ctx.request_buffer.items) catch |err| switch (err) {
-        error.IncompleteRequest => {
+        @import("request.zig").ParseRequestError.IncompleteRequest => {
             return .rearm;
         },
         else => {
