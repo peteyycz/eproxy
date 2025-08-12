@@ -4,12 +4,11 @@ const std = @import("std");
 const CaseInsensitiveStringContext = struct {
     pub fn hash(self: @This(), s: []const u8) u64 {
         _ = self;
-        var hasher = std.hash_map.getAutoHashFn(u64, void){};
-        var h = hasher.init();
+        var hasher = std.hash.Wyhash.init(0);
         for (s) |c| {
-            h.update(&[_]u8{std.ascii.toLower(c)});
+            hasher.update(&[_]u8{std.ascii.toLower(c)});
         }
-        return h.final();
+        return hasher.final();
     }
 
     pub fn eql(self: @This(), a: []const u8, b: []const u8) bool {

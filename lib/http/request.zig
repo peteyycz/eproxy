@@ -129,6 +129,7 @@ pub const ParseRequestError = error{
     UnsupportedTransferEncoding,
     InvalidHttpVersion,
     HeaderTooLarge,
+    OutOfMemory,
 };
 
 // Enhanced HTTP request parser with robust validation and security checks
