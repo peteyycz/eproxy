@@ -170,6 +170,7 @@ pub fn parseRequest(allocator: std.mem.Allocator, request: []u8) ParseRequestErr
     }
 
     var headers_hash = HeaderMap.init(allocator);
+    errdefer headers_hash.deinit(); // Clean up on error
     var header_count: u32 = 0;
     const max_headers = 100; // Security limit
     const max_header_size = 8 * 1024; // 8KB per header
