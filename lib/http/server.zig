@@ -145,8 +145,8 @@ fn clientReadCallback(ctx_opt: ?*ClientContext, loop: *xev.Loop, _: *xev.Complet
 
     // Parse request starting from current_request_start for keepalive support
     const current_request_data = ctx.request_buffer.items[ctx.current_request_start..];
-    var req = request.parseRequest(ctx.allocator, current_request_data) catch |err| switch (err) {
-        .ParseRequestError.IncompleteRequest => {
+    const req = request.parseRequest(ctx.allocator, current_request_data) catch |err| switch (err) {
+        request.ParseRequestError.IncompleteRequest => {
             return .rearm;
         },
         else => {
