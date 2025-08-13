@@ -150,7 +150,7 @@ fn clientReadCallback(ctx_opt: ?*ClientContext, loop: *xev.Loop, _: *xev.Complet
     };
 
     // Create handler context and handle the request
-    const handler_ctx = HandlerContext.init(ctx.allocator, req, ctx, socket) catch {
+    const handler_ctx = HandlerContext.init(ctx.allocator, req) catch {
         util.closeSocket(ClientContext, ctx, loop, socket);
         return .disarm;
     };
@@ -159,7 +159,7 @@ fn clientReadCallback(ctx_opt: ?*ClientContext, loop: *xev.Loop, _: *xev.Complet
     log.debug("Handling request: {s}", .{handler_ctx.req.pathname});
 
     const write_buffer = response[0..@min(response.len, chunk_size)];
-    handler_ctx.socket.write(loop, &handler_ctx.write_completion, .{ .slice = write_buffer }, HandlerContext, handler_ctx, handlerWriteCallback);
+    socket.write(loop, &handler_ctx.write_completion, .{ .slice = write_buffer }, HandlerContext, handler_ctx, handlerWriteCallback);
 
     // This is only needed for keepalive connections, so we can read the next request
     return .rearm;
