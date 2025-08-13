@@ -36,7 +36,6 @@ pub fn createServer(allocator: std.mem.Allocator, loop: *xev.Loop, port: u16) !v
     try socket.listen(128); // Listen backlog size
 
     const ctx = try Context.init(allocator, loop, socket);
-    ctx.accept_completion = .{}; // Initialize completion
 
     socket.accept(loop, &ctx.accept_completion, Context, ctx, serverAcceptCallback);
 }
@@ -88,9 +87,6 @@ const ClientContext = struct {
         ctx.allocator = allocator;
         ctx.loop = loop;
         ctx.current_request_start = 0;
-        ctx.read_completion = .{};
-        ctx.shutdown_completion = .{};
-        ctx.close_completion = .{};
         return ctx;
     }
 
@@ -117,7 +113,6 @@ const HandlerContext = struct {
         ctx.client_ctx = client_ctx;
         ctx.socket = socket;
         ctx.bytes_written = 0;
-        ctx.write_completion = .{};
         return ctx;
     }
 
@@ -194,7 +189,6 @@ fn handlerWriteCallback(handler_ctx_opt: ?*HandlerContext, loop: *xev.Loop, _: *
     const from = handler_ctx.bytes_written;
     const to = @min(handler_ctx.bytes_written + chunk_size, response.len);
     const write_buffer = response[from..to];
-    handler_ctx.write_completion = .{}; // Reset completion
     socket.write(loop, &handler_ctx.write_completion, .{ .slice = write_buffer }, HandlerContext, handler_ctx, handlerWriteCallback);
 
     return .disarm;
