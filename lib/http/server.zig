@@ -116,8 +116,6 @@ const HandlerContext = struct {
     }
 };
 
-fn handleRequest(handler_ctx: *HandlerContext, loop: *xev.Loop) void {}
-
 fn clientReadCallback(ctx_opt: ?*ClientContext, loop: *xev.Loop, _: *xev.Completion, socket: xev.TCP, read_buffer: xev.ReadBuffer, r: xev.ReadError!usize) xev.CallbackAction {
     const ctx = ctx_opt orelse return .disarm;
     const bytes_read = r catch |err| switch (err) {
