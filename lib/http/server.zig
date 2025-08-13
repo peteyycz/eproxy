@@ -7,20 +7,6 @@ const HeaderMap = @import("header_map.zig").HeaderMap;
 
 const parseRequest = request.parseRequest;
 
-const HandlerContext = struct {
-    req: request.Request,
-
-    pub fn init(req: request.Request) HandlerContext {
-        return HandlerContext{
-            .req = req,
-        };
-    }
-
-    pub fn deinit(self: *HandlerContext) void {
-        self.req.deinit();
-    }
-};
-
 // TODO: Consider pooling like https://github.com/dylanblokhuis/xev-http/blob/master/src/main.zig
 const Context = struct {
     allocator: std.mem.Allocator,
@@ -113,9 +99,23 @@ const ClientContext = struct {
 const response = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\n\r\nHello, World!";
 // const response = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: keep-alive\n\r\nHello, World!";
 
+const HandlerContext = struct {
+    req: request.Request,
+
+    pub fn init(req: request.Request) HandlerContext {
+        return HandlerContext{
+            .req = req,
+        };
+    }
+
+    pub fn deinit(self: *HandlerContext) void {
+        self.req.deinit();
+    }
+};
+
 fn handleRequest(handler_ctx: *HandlerContext, ctx: *ClientContext, loop: *xev.Loop, socket: xev.TCP) void {
     defer handler_ctx.deinit();
-    
+
     log.debug("Handling request: {s}", .{handler_ctx.req.pathname});
 
     const write_buffer = response[0..@min(response.len, chunk_size)];
@@ -158,11 +158,6 @@ fn clientReadCallback(ctx_opt: ?*ClientContext, loop: *xev.Loop, _: *xev.Complet
     // Create handler context and handle the request
     var handler_ctx = HandlerContext.init(req);
     handleRequest(&handler_ctx, ctx, loop, socket);
-
-    // Update current_request_start for potential next request in keepalive connections
-    // For now, we'll reset it since we're using Connection: close
-    ctx.current_request_start = 0;
-    ctx.request_buffer.clearRetainingCapacity();
 
     // This is only needed for keepalive connections, so we can read the next request
     return .rearm;
