@@ -57,7 +57,6 @@ fn serverAcceptCallback(
     const client_ctx = ClientContext.init(ctx.allocator, loop) catch {
         return .disarm;
     };
-    client_ctx.socket = client_socket;
     client_socket.read(loop, &client_ctx.read_completion, .{ .slice = &client_ctx.read_buffer }, ClientContext, client_ctx, clientReadCallback);
 
     // Continue accepting new connections
@@ -70,7 +69,6 @@ const chunk_size = 10; // 4 KiB read buffer
 const ClientContext = struct {
     allocator: std.mem.Allocator,
     loop: *xev.Loop,
-    socket: xev.TCP = undefined,
 
     read_buffer: [chunk_size]u8 = undefined,
     request_buffer: std.ArrayList(u8),
