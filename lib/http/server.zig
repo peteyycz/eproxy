@@ -149,7 +149,7 @@ fn clientReadCallback(ctx_opt: ?*ClientContext, loop: *xev.Loop, _: *xev.Complet
         },
     };
 
-    // Create handler context and handle the request
+    // In preparation of keep-alive request handling we create a separate HandlerContext for each of the requests here
     const handler_ctx = HandlerContext.init(ctx.allocator, req) catch {
         util.closeSocket(ClientContext, ctx, loop, socket);
         return .disarm;
