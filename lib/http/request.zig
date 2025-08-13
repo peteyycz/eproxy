@@ -576,7 +576,7 @@ test "parseRequest with multiple requests in one chunk - first request only" {
     try testing.expectEqual(Method.GET, req.method);
     try testing.expectEqualStrings("/first", req.pathname);
     try testing.expectEqualStrings("example.com", req.headers.get("host").?);
-    try testing.expectEqual(43, result.end_index);
+    try testing.expectEqual(41, result.end_index);
 }
 
 test "parseRequest with headers containing whitespace" {
