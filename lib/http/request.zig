@@ -342,3 +342,248 @@ test "Request.allocPrint with complex path" {
         "Connection: close\r\n\r\n";
     try testing.expectEqualStrings(expected, request_str);
 }
+
+// Tests for parseRequest function
+
+test "parseRequest with empty request" {
+    const allocator = std.testing.allocator;
+    var empty_request = [_]u8{};
+    const err = parseRequest(allocator, &empty_request);
+    try testing.expectError(ParseRequestError.InvalidRequest, err);
+}
+
+test "parseRequest with incomplete request - no headers end" {
+    const allocator = std.testing.allocator;
+    var incomplete_request = "GET /test HTTP/1.1\r\nHost: example.com".*;
+    const err = parseRequest(allocator, &incomplete_request);
+    try testing.expectError(ParseRequestError.IncompleteRequest, err);
+}
+
+test "parseRequest with incomplete request - only request line" {
+    const allocator = std.testing.allocator;
+    var incomplete_request = "GET /test HTTP/1.1".*;
+    const err = parseRequest(allocator, &incomplete_request);
+    try testing.expectError(ParseRequestError.IncompleteRequest, err);
+}
+
+test "parseRequest with incomplete request - missing double CRLF" {
+    const allocator = std.testing.allocator;
+    var incomplete_request = "GET /test HTTP/1.1\r\nHost: example.com\r\n".*;
+    const err = parseRequest(allocator, &incomplete_request);
+    try testing.expectError(ParseRequestError.IncompleteRequest, err);
+}
+
+test "parseRequest with valid GET request" {
+    const allocator = std.testing.allocator;
+    var valid_request = "GET /test HTTP/1.1\r\nHost: example.com\r\n\r\n".*;
+    var req = try parseRequest(allocator, &valid_request);
+    defer req.deinit();
+
+    try testing.expectEqual(Method.GET, req.method);
+    try testing.expectEqualStrings("/test", req.pathname);
+    try testing.expectEqualStrings("example.com", req.headers.get("host").?);
+}
+
+test "parseRequest with valid POST request with body" {
+    const allocator = std.testing.allocator;
+    var valid_request = "POST /api/data HTTP/1.1\r\nHost: api.example.com\r\nContent-Length: 13\r\n\r\nHello, World!".*;
+    var req = try parseRequest(allocator, &valid_request);
+    defer req.deinit();
+
+    try testing.expectEqual(Method.POST, req.method);
+    try testing.expectEqualStrings("/api/data", req.pathname);
+    try testing.expectEqualStrings("api.example.com", req.headers.get("host").?);
+    try testing.expectEqualStrings("13", req.headers.get("content-length").?);
+}
+
+test "parseRequest with invalid request line - missing parts" {
+    const allocator = std.testing.allocator;
+    var invalid_request = "GET HTTP/1.1\r\nHost: example.com\r\n\r\n".*;
+    const err = parseRequest(allocator, &invalid_request);
+    try testing.expectError(ParseRequestError.InvalidRequest, err);
+}
+
+test "parseRequest with invalid request line - too many parts" {
+    const allocator = std.testing.allocator;
+    var invalid_request = "GET /test HTTP/1.1 extra\r\nHost: example.com\r\n\r\n".*;
+    const err = parseRequest(allocator, &invalid_request);
+    try testing.expectError(ParseRequestError.InvalidRequest, err);
+}
+
+test "parseRequest with invalid HTTP version" {
+    const allocator = std.testing.allocator;
+    var invalid_request = "GET /test HTTP/2.0\r\nHost: example.com\r\n\r\n".*;
+    const err = parseRequest(allocator, &invalid_request);
+    try testing.expectError(ParseRequestError.InvalidHttpVersion, err);
+}
+
+test "parseRequest with invalid method" {
+    const allocator = std.testing.allocator;
+    var invalid_request = "INVALID /test HTTP/1.1\r\nHost: example.com\r\n\r\n".*;
+    const err = parseRequest(allocator, &invalid_request);
+    try testing.expectError(ParseRequestError.InvalidRequest, err);
+}
+
+test "parseRequest with invalid pathname - not starting with slash" {
+    const allocator = std.testing.allocator;
+    var invalid_request = "GET test HTTP/1.1\r\nHost: example.com\r\n\r\n".*;
+    const err = parseRequest(allocator, &invalid_request);
+    try testing.expectError(ParseRequestError.InvalidRequest, err);
+}
+
+test "parseRequest with missing Host header in HTTP/1.1" {
+    const allocator = std.testing.allocator;
+    var invalid_request = "GET /test HTTP/1.1\r\nConnection: close\r\n\r\n".*;
+    const err = parseRequest(allocator, &invalid_request);
+    try testing.expectError(ParseRequestError.MissingHostHeader, err);
+}
+
+test "parseRequest with HTTP/1.0 without Host header - should pass" {
+    const allocator = std.testing.allocator;
+    var valid_request = "GET /test HTTP/1.0\r\nConnection: close\r\n\r\n".*;
+    var req = try parseRequest(allocator, &valid_request);
+    defer req.deinit();
+
+    try testing.expectEqual(Method.GET, req.method);
+    try testing.expectEqualStrings("/test", req.pathname);
+}
+
+test "parseRequest with too many headers" {
+    const allocator = std.testing.allocator;
+    var request_builder = std.ArrayList(u8).init(allocator);
+    defer request_builder.deinit();
+
+    try request_builder.appendSlice("GET /test HTTP/1.1\r\nHost: example.com\r\n");
+    
+    // Add 101 headers (exceeds the 100 limit)
+    var i: u32 = 0;
+    while (i < 101) : (i += 1) {
+        try request_builder.writer().print("Header{}: value{}\r\n", .{ i, i });
+    }
+    try request_builder.appendSlice("\r\n");
+
+    const err = parseRequest(allocator, request_builder.items);
+    try testing.expectError(ParseRequestError.TooManyHeaders, err);
+}
+
+test "parseRequest with header too large" {
+    const allocator = std.testing.allocator;
+    var request_builder = std.ArrayList(u8).init(allocator);
+    defer request_builder.deinit();
+
+    try request_builder.appendSlice("GET /test HTTP/1.1\r\nHost: example.com\r\n");
+    
+    // Create a header larger than 8KB
+    try request_builder.appendSlice("Large-Header: ");
+    var j: u32 = 0;
+    while (j < 9000) : (j += 1) {
+        try request_builder.append('x');
+    }
+    try request_builder.appendSlice("\r\n\r\n");
+
+    const err = parseRequest(allocator, request_builder.items);
+    try testing.expectError(ParseRequestError.HeaderTooLarge, err);
+}
+
+test "parseRequest with invalid header format - no colon" {
+    const allocator = std.testing.allocator;
+    var invalid_request = "GET /test HTTP/1.1\r\nHost example.com\r\n\r\n".*;
+    const err = parseRequest(allocator, &invalid_request);
+    try testing.expectError(ParseRequestError.InvalidRequest, err);
+}
+
+test "parseRequest with invalid header format - empty key" {
+    const allocator = std.testing.allocator;
+    var invalid_request = "GET /test HTTP/1.1\r\nHost: example.com\r\n: empty-key\r\n\r\n".*;
+    const err = parseRequest(allocator, &invalid_request);
+    try testing.expectError(ParseRequestError.InvalidRequest, err);
+}
+
+test "parseRequest with GET request having Content-Length - should fail" {
+    const allocator = std.testing.allocator;
+    var invalid_request = "GET /test HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\n\r\nhello".*;
+    const err = parseRequest(allocator, &invalid_request);
+    try testing.expectError(ParseRequestError.InvalidRequest, err);
+}
+
+test "parseRequest with POST request with incomplete body" {
+    const allocator = std.testing.allocator;
+    var incomplete_request = "POST /test HTTP/1.1\r\nHost: example.com\r\nContent-Length: 10\r\n\r\nhello".*;
+    const err = parseRequest(allocator, &incomplete_request);
+    try testing.expectError(ParseRequestError.IncompleteRequest, err);
+}
+
+test "parseRequest with POST request with complete body" {
+    const allocator = std.testing.allocator;
+    var valid_request = "POST /test HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\n\r\nhello".*;
+    var req = try parseRequest(allocator, &valid_request);
+    defer req.deinit();
+
+    try testing.expectEqual(Method.POST, req.method);
+    try testing.expectEqualStrings("/test", req.pathname);
+    try testing.expectEqualStrings("5", req.headers.get("content-length").?);
+}
+
+test "parseRequest with chunked transfer encoding" {
+    const allocator = std.testing.allocator;
+    var valid_request = "POST /test HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n".*;
+    var req = try parseRequest(allocator, &valid_request);
+    defer req.deinit();
+
+    try testing.expectEqual(Method.POST, req.method);
+    try testing.expectEqualStrings("chunked", req.headers.get("transfer-encoding").?);
+}
+
+test "parseRequest with unsupported transfer encoding" {
+    const allocator = std.testing.allocator;
+    var invalid_request = "POST /test HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: gzip\r\n\r\n".*;
+    const err = parseRequest(allocator, &invalid_request);
+    try testing.expectError(ParseRequestError.UnsupportedTransferEncoding, err);
+}
+
+test "parseRequest with multiple requests in one chunk - first request only" {
+    const allocator = std.testing.allocator;
+    // Two complete requests concatenated
+    var multiple_requests = "GET /first HTTP/1.1\r\nHost: example.com\r\n\r\nGET /second HTTP/1.1\r\nHost: example.com\r\n\r\n".*;
+    var req = try parseRequest(allocator, &multiple_requests);
+    defer req.deinit();
+
+    // Should only parse the first request
+    try testing.expectEqual(Method.GET, req.method);
+    try testing.expectEqualStrings("/first", req.pathname);
+    try testing.expectEqualStrings("example.com", req.headers.get("host").?);
+}
+
+test "parseRequest with headers containing whitespace" {
+    const allocator = std.testing.allocator;
+    var valid_request = "GET /test HTTP/1.1\r\n  Host  :  example.com  \r\nUser-Agent: test-agent\r\n\r\n".*;
+    var req = try parseRequest(allocator, &valid_request);
+    defer req.deinit();
+
+    try testing.expectEqualStrings("example.com", req.headers.get("Host").?);
+    try testing.expectEqualStrings("test-agent", req.headers.get("User-Agent").?);
+}
+
+test "parseRequest with various HTTP methods" {
+    const allocator = std.testing.allocator;
+    
+    const methods = [_]struct { str: []const u8, method: Method }{
+        .{ .str = "PUT", .method = .PUT },
+        .{ .str = "DELETE", .method = .DELETE },
+        .{ .str = "HEAD", .method = .HEAD },
+        .{ .str = "OPTIONS", .method = .OPTIONS },
+        .{ .str = "PATCH", .method = .PATCH },
+    };
+
+    for (methods) |test_case| {
+        var request_builder = std.ArrayList(u8).init(allocator);
+        defer request_builder.deinit();
+        
+        try request_builder.writer().print("{s} /test HTTP/1.1\r\nHost: example.com\r\n\r\n", .{test_case.str});
+        
+        var req = try parseRequest(allocator, request_builder.items);
+        defer req.deinit();
+        
+        try testing.expectEqual(test_case.method, req.method);
+    }
+}
