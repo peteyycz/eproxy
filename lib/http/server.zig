@@ -7,6 +7,20 @@ const HeaderMap = @import("header_map.zig").HeaderMap;
 
 const parseRequest = request.parseRequest;
 
+const HandlerContext = struct {
+    req: request.Request,
+
+    pub fn init(req: request.Request) HandlerContext {
+        return HandlerContext{
+            .req = req,
+        };
+    }
+
+    pub fn deinit(self: *HandlerContext) void {
+        self.req.deinit();
+    }
+};
+
 // TODO: Consider pooling like https://github.com/dylanblokhuis/xev-http/blob/master/src/main.zig
 const Context = struct {
     allocator: std.mem.Allocator,
@@ -72,6 +86,7 @@ const ClientContext = struct {
     request_buffer: std.ArrayList(u8),
 
     bytes_written: usize = 0,
+    current_request_start: usize = 0,
 
     read_completion: xev.Completion = undefined,
     write_completion: xev.Completion = undefined,
@@ -84,6 +99,7 @@ const ClientContext = struct {
         ctx.allocator = allocator;
         ctx.loop = loop;
         ctx.bytes_written = 0;
+        ctx.current_request_start = 0;
         return ctx;
     }
 
@@ -96,6 +112,15 @@ const ClientContext = struct {
 // TODO: move this to utils and use it
 const response = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\n\r\nHello, World!";
 // const response = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: keep-alive\n\r\nHello, World!";
+
+fn handleRequest(handler_ctx: *HandlerContext, ctx: *ClientContext, loop: *xev.Loop, socket: xev.TCP) void {
+    defer handler_ctx.deinit();
+    
+    log.debug("Handling request: {s}", .{handler_ctx.req.pathname});
+
+    const write_buffer = response[0..@min(response.len, chunk_size)];
+    socket.write(loop, &ctx.write_completion, .{ .slice = write_buffer }, ClientContext, ctx, clientWriteCallback);
+}
 
 fn clientReadCallback(ctx_opt: ?*ClientContext, loop: *xev.Loop, _: *xev.Completion, socket: xev.TCP, read_buffer: xev.ReadBuffer, r: xev.ReadError!usize) xev.CallbackAction {
     const ctx = ctx_opt orelse return .disarm;
@@ -118,9 +143,9 @@ fn clientReadCallback(ctx_opt: ?*ClientContext, loop: *xev.Loop, _: *xev.Complet
         return .disarm;
     };
 
-    // TODO: In a keepalive connection the buffer can grow indefinitely, so we should keep track of only the last
-    // request
-    var req = request.parseRequest(ctx.allocator, ctx.request_buffer.items) catch |err| switch (err) {
+    // Parse request starting from current_request_start for keepalive support
+    const current_request_data = ctx.request_buffer.items[ctx.current_request_start..];
+    var req = request.parseRequest(ctx.allocator, current_request_data) catch |err| switch (err) {
         .ParseRequestError.IncompleteRequest => {
             return .rearm;
         },
@@ -129,11 +154,15 @@ fn clientReadCallback(ctx_opt: ?*ClientContext, loop: *xev.Loop, _: *xev.Complet
             return .disarm;
         },
     };
-    defer req.deinit();
-    log.debug("Received request: {s}", .{req.pathname});
 
-    const write_buffer = response[0..@min(response.len, chunk_size)];
-    socket.write(loop, &ctx.write_completion, .{ .slice = write_buffer }, ClientContext, ctx, clientWriteCallback);
+    // Create handler context and handle the request
+    var handler_ctx = HandlerContext.init(req);
+    handleRequest(&handler_ctx, ctx, loop, socket);
+
+    // Update current_request_start for potential next request in keepalive connections
+    // For now, we'll reset it since we're using Connection: close
+    ctx.current_request_start = 0;
+    ctx.request_buffer.clearRetainingCapacity();
 
     // This is only needed for keepalive connections, so we can read the next request
     return .rearm;
