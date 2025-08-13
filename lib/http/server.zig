@@ -139,7 +139,7 @@ fn clientReadCallback(ctx_opt: ?*ClientContext, loop: *xev.Loop, _: *xev.Complet
 
     // Parse request starting from current_request_start for keepalive support
     const current_request_data = ctx.request_buffer.items[ctx.current_request_start..];
-    const req = request.parseRequest(ctx.allocator, current_request_data) catch |err| switch (err) {
+    const parse_result = request.parseRequest(ctx.allocator, current_request_data) catch |err| switch (err) {
         request.ParseRequestError.IncompleteRequest => {
             return .rearm;
         },
@@ -148,6 +148,8 @@ fn clientReadCallback(ctx_opt: ?*ClientContext, loop: *xev.Loop, _: *xev.Complet
             return .disarm;
         },
     };
+    const req = parse_result.request;
+    // TODO: use parse_result.end_index to advance buffer for keep-alive
 
     // In preparation of keep-alive request handling we create a separate HandlerContext for each of the requests here
     const handler_ctx = HandlerContext.init(ctx.allocator, req) catch {
