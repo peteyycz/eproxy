@@ -59,9 +59,7 @@ fn serverAcceptCallback(
     };
     client_socket.read(loop, &client_ctx.read_completion, .{ .slice = &client_ctx.read_buffer }, ClientContext, client_ctx, clientReadCallback);
 
-    // Continue accepting new connections
-    ctx.socket.accept(loop, &ctx.accept_completion, Context, ctx, serverAcceptCallback);
-    return .disarm;
+    return .rearm;
 }
 
 const chunk_size = 10; // 4 KiB read buffer
