@@ -170,4 +170,3 @@ fn readCallback(
 
     return .rearm;
 }
-
