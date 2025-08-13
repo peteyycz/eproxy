@@ -82,7 +82,6 @@ const ClientContext = struct {
         ctx.request_buffer = std.ArrayList(u8).init(allocator);
         ctx.allocator = allocator;
         ctx.loop = loop;
-        ctx.bytes_written = 0;
         ctx.current_request_start = 0;
         return ctx;
     }
