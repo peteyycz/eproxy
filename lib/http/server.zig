@@ -29,8 +29,8 @@ const Context = struct {
     }
 };
 
-pub fn createServer(allocator: std.mem.Allocator, loop: *xev.Loop) !void {
-    const address = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, 8080);
+pub fn createServer(allocator: std.mem.Allocator, loop: *xev.Loop, port: u16) !void {
+    const address = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, port);
     const socket = try xev.TCP.init(address);
     try socket.bind(address);
     try socket.listen(128); // Listen backlog size

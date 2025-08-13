@@ -20,7 +20,9 @@ pub fn main() !void {
     });
     defer loop.deinit();
 
-    try eproxy.createServer(allocator, &loop);
+    const port: u16 = 8080;
+    log.info("Server listening on http://localhost:{}", .{port});
+    try eproxy.createServer(allocator, &loop, port);
 
     // const request = try eproxy.Request.allocFromUrl(allocator, .GET, "http://httpbin.org/get");
     // try fetch.doFetch(allocator, &loop, request, struct {
