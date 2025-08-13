@@ -93,8 +93,8 @@ const ClientContext = struct {
 };
 
 // TODO: move this to utils and use it
-const response = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\r\n\r\nHello, World!";
-// const response = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: keep-alive\r\n\r\nHello, World!";
+// const response = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\r\n\r\nHello, World!";
+const response = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: keep-alive\r\n\r\nHello, World!";
 
 const HandlerContext = struct {
     allocator: std.mem.Allocator,
@@ -120,12 +120,7 @@ const HandlerContext = struct {
     }
 };
 
-fn handleRequest(handler_ctx: *HandlerContext, loop: *xev.Loop) void {
-    log.debug("Handling request: {s}", .{handler_ctx.req.pathname});
-
-    const write_buffer = response[0..@min(response.len, chunk_size)];
-    handler_ctx.socket.write(loop, &handler_ctx.write_completion, .{ .slice = write_buffer }, HandlerContext, handler_ctx, handlerWriteCallback);
-}
+fn handleRequest(handler_ctx: *HandlerContext, loop: *xev.Loop) void {}
 
 fn clientReadCallback(ctx_opt: ?*ClientContext, loop: *xev.Loop, _: *xev.Completion, socket: xev.TCP, read_buffer: xev.ReadBuffer, r: xev.ReadError!usize) xev.CallbackAction {
     const ctx = ctx_opt orelse return .disarm;
@@ -165,7 +160,12 @@ fn clientReadCallback(ctx_opt: ?*ClientContext, loop: *xev.Loop, _: *xev.Complet
         util.closeSocket(ClientContext, ctx, loop, socket);
         return .disarm;
     };
-    handleRequest(handler_ctx, loop);
+
+    // Fork happens in the road
+    log.debug("Handling request: {s}", .{handler_ctx.req.pathname});
+
+    const write_buffer = response[0..@min(response.len, chunk_size)];
+    handler_ctx.socket.write(loop, &handler_ctx.write_completion, .{ .slice = write_buffer }, HandlerContext, handler_ctx, handlerWriteCallback);
 
     // This is only needed for keepalive connections, so we can read the next request
     return .rearm;
