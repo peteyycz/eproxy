@@ -93,8 +93,8 @@ const ClientContext = struct {
 };
 
 // TODO: move this to utils and use it
-const response = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\n\r\nHello, World!";
-// const response = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: keep-alive\n\r\nHello, World!";
+const response = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\r\n\r\nHello, World!";
+// const response = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: keep-alive\r\n\r\nHello, World!";
 
 const HandlerContext = struct {
     allocator: std.mem.Allocator,
