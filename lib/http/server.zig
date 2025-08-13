@@ -99,17 +99,13 @@ const response = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: keep-aliv
 const HandlerContext = struct {
     allocator: std.mem.Allocator,
     req: request.Request,
-    client_ctx: *ClientContext,
-    socket: xev.TCP,
     bytes_written: usize = 0,
     write_completion: xev.Completion = undefined,
 
-    pub fn init(allocator: std.mem.Allocator, req: request.Request, client_ctx: *ClientContext, socket: xev.TCP) !*HandlerContext {
+    pub fn init(allocator: std.mem.Allocator, req: request.Request) !*HandlerContext {
         const ctx = try allocator.create(HandlerContext);
         ctx.allocator = allocator;
         ctx.req = req;
-        ctx.client_ctx = client_ctx;
-        ctx.socket = socket;
         ctx.bytes_written = 0;
         return ctx;
     }
