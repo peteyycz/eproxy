@@ -307,8 +307,8 @@ test "Request.allocPrint with basic request" {
 
     const expected =
         "GET /test HTTP/1.1\r\n" ++
-        "Connection: close\r\n" ++
-        "Host: example.com\r\n\r\n";
+        "Host: example.com\r\n" ++
+        "Connection: close\r\n\r\n";
     try testing.expectEqualStrings(expected, request_str);
 }
 
@@ -322,8 +322,8 @@ test "Request.allocPrint with root path" {
 
     const expected =
         "GET / HTTP/1.1\r\n" ++
-        "Connection: close\r\n" ++
-        "Host: api.example.com\r\n\r\n";
+        "Host: api.example.com\r\n" ++
+        "Connection: close\r\n\r\n";
     try testing.expectEqualStrings(expected, request_str);
 }
 
@@ -337,7 +337,7 @@ test "Request.allocPrint with complex path" {
 
     const expected =
         "GET /api/v1/users?id=123 HTTP/1.1\r\n" ++
-        "Connection: close\r\n" ++
-        "Host: example.com\r\n\r\n";
+        "Host: example.com\r\n" ++
+        "Connection: close\r\n\r\n";
     try testing.expectEqualStrings(expected, request_str);
 }
