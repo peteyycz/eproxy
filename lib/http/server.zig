@@ -74,7 +74,6 @@ const ClientContext = struct {
     current_request_start: usize = 0,
 
     read_completion: xev.Completion = undefined,
-    write_completion: xev.Completion = undefined,
     shutdown_completion: xev.Completion = undefined,
     close_completion: xev.Completion = undefined,
 
@@ -102,12 +101,14 @@ const HandlerContext = struct {
     req: request.Request,
     client_ctx: *ClientContext,
     bytes_written: usize = 0,
+    write_completion: xev.Completion = undefined,
 
     pub fn init(req: request.Request, client_ctx: *ClientContext) HandlerContext {
         return HandlerContext{
             .req = req,
             .client_ctx = client_ctx,
             .bytes_written = 0,
+            .write_completion = undefined,
         };
     }
 
@@ -122,7 +123,7 @@ fn handleRequest(handler_ctx: *HandlerContext, loop: *xev.Loop, socket: xev.TCP)
     log.debug("Handling request: {s}", .{handler_ctx.req.pathname});
 
     const write_buffer = response[0..@min(response.len, chunk_size)];
-    socket.write(loop, &handler_ctx.client_ctx.write_completion, .{ .slice = write_buffer }, HandlerContext, handler_ctx, handlerWriteCallback);
+    socket.write(loop, &handler_ctx.write_completion, .{ .slice = write_buffer }, HandlerContext, handler_ctx, handlerWriteCallback);
 }
 
 fn clientReadCallback(ctx_opt: ?*ClientContext, loop: *xev.Loop, _: *xev.Completion, socket: xev.TCP, read_buffer: xev.ReadBuffer, r: xev.ReadError!usize) xev.CallbackAction {
@@ -180,7 +181,7 @@ fn handlerWriteCallback(handler_ctx_opt: ?*HandlerContext, loop: *xev.Loop, _: *
     const from = handler_ctx.bytes_written;
     const to = @min(handler_ctx.bytes_written + chunk_size, response.len);
     const write_buffer = response[from..to];
-    socket.write(loop, &handler_ctx.client_ctx.write_completion, .{ .slice = write_buffer }, HandlerContext, handler_ctx, handlerWriteCallback);
+    socket.write(loop, &handler_ctx.write_completion, .{ .slice = write_buffer }, HandlerContext, handler_ctx, handlerWriteCallback);
 
     return .disarm;
 }
