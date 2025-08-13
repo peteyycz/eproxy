@@ -97,6 +97,7 @@ const response = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\n\r
 // const response = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: keep-alive\n\r\nHello, World!";
 
 const HandlerContext = struct {
+    allocator: std.mem.Allocator,
     req: request.Request,
     client_ctx: *ClientContext,
     socket: xev.TCP,
@@ -105,6 +106,7 @@ const HandlerContext = struct {
 
     pub fn init(allocator: std.mem.Allocator, req: request.Request, client_ctx: *ClientContext, socket: xev.TCP) !*HandlerContext {
         const ctx = try allocator.create(HandlerContext);
+        ctx.allocator = allocator;
         ctx.req = req;
         ctx.client_ctx = client_ctx;
         ctx.socket = socket;
@@ -112,9 +114,9 @@ const HandlerContext = struct {
         return ctx;
     }
 
-    pub fn deinit(self: *HandlerContext, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *HandlerContext) void {
         self.req.deinit();
-        allocator.destroy(self);
+        self.allocator.destroy(self);
     }
 };
 
@@ -173,13 +175,13 @@ fn clientReadCallback(ctx_opt: ?*ClientContext, loop: *xev.Loop, _: *xev.Complet
 fn handlerWriteCallback(handler_ctx_opt: ?*HandlerContext, loop: *xev.Loop, _: *xev.Completion, socket: xev.TCP, _: xev.WriteBuffer, r: xev.WriteError!usize) xev.CallbackAction {
     const handler_ctx = handler_ctx_opt orelse return .disarm;
     const bytes_written = r catch {
-        handler_ctx.deinit(handler_ctx.client_ctx.allocator);
+        handler_ctx.deinit();
         return .disarm;
     };
 
     handler_ctx.bytes_written += bytes_written;
     if (handler_ctx.bytes_written >= response.len) {
-        handler_ctx.deinit(handler_ctx.client_ctx.allocator);
+        handler_ctx.deinit();
         return .disarm;
     }
     const from = handler_ctx.bytes_written;
