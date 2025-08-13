@@ -142,13 +142,13 @@ pub fn parseRequest(allocator: std.mem.Allocator, request: []u8) ParseRequestErr
     if (request.len == 0) return ParseRequestError.InvalidRequest;
 
     // Check if we have the complete headers section (double CRLF)
-    const headers_end_idx = std.mem.indexOf(u8, request, crlf ++ crlf) orelse return ParseRequestError.IncompleteRequest;
+    const headers_end_index = std.mem.indexOf(u8, request, crlf ++ crlf) orelse return ParseRequestError.IncompleteRequest;
 
-    const headers_section = request[0..headers_end_idx];
-    const body_start = headers_end_idx + 4; // Skip the double CRLF
+    const headers_section = request[0..headers_end_index];
+    const body_start = headers_end_index + 4; // Skip the double CRLF
     const body = if (body_start < request.len) request[body_start..] else "";
 
-    var end_index: u64 = headers_end_idx + 3;
+    var end_index: u64 = headers_end_index + crlf.len * 2;
 
     // Validate that we have at least a request line
     var headers_iterator = std.mem.tokenizeSequence(u8, headers_section, crlf);
@@ -213,7 +213,7 @@ pub fn parseRequest(allocator: std.mem.Allocator, request: []u8) ParseRequestErr
             return ParseRequestError.IncompleteRequest;
         }
         if (content_length > 0) {
-            end_index = body_start + content_length - 1;
+            end_index = body_start + content_length;
         }
 
         // For methods that shouldn't have a body, validate Content-Length is 0
@@ -473,7 +473,7 @@ test "parseRequest with too many headers" {
     defer request_builder.deinit();
 
     try request_builder.appendSlice("GET /test HTTP/1.1\r\nHost: example.com\r\n");
-    
+
     // Add 101 headers (exceeds the 100 limit)
     var i: u32 = 0;
     while (i < 101) : (i += 1) {
@@ -491,7 +491,7 @@ test "parseRequest with header too large" {
     defer request_builder.deinit();
 
     try request_builder.appendSlice("GET /test HTTP/1.1\r\nHost: example.com\r\n");
-    
+
     // Create a header larger than 8KB
     try request_builder.appendSlice("Large-Header: ");
     var j: u32 = 0;
@@ -593,7 +593,7 @@ test "parseRequest with headers containing whitespace" {
 
 test "parseRequest with various HTTP methods" {
     const allocator = std.testing.allocator;
-    
+
     const methods = [_]struct { str: []const u8, method: Method }{
         .{ .str = "PUT", .method = .PUT },
         .{ .str = "DELETE", .method = .DELETE },
@@ -605,13 +605,13 @@ test "parseRequest with various HTTP methods" {
     for (methods) |test_case| {
         var request_builder = std.ArrayList(u8).init(allocator);
         defer request_builder.deinit();
-        
+
         try request_builder.writer().print("{s} /test HTTP/1.1\r\nHost: example.com\r\n\r\n", .{test_case.str});
-        
+
         var result = try parseRequest(allocator, request_builder.items);
         defer result.request.deinit();
         const req = result.request;
-        
+
         try testing.expectEqual(test_case.method, req.method);
         try testing.expectEqual(@as(u64, request_builder.items.len - 1), result.end_index);
     }
