@@ -71,8 +71,6 @@ const ClientContext = struct {
     read_buffer: [chunk_size]u8 = undefined,
     request_buffer: std.ArrayList(u8),
 
-    current_request_start: usize = 0,
-
     read_completion: xev.Completion = undefined,
     shutdown_completion: xev.Completion = undefined,
     close_completion: xev.Completion = undefined,
@@ -82,7 +80,6 @@ const ClientContext = struct {
         ctx.request_buffer = std.ArrayList(u8).init(allocator);
         ctx.allocator = allocator;
         ctx.loop = loop;
-        ctx.current_request_start = 0;
         return ctx;
     }
 
@@ -93,8 +90,7 @@ const ClientContext = struct {
 };
 
 // TODO: move this to utils and use it
-// const response = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\r\n\r\nHello, World!";
-const response = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: keep-alive\r\n\r\nHello, World!";
+const response = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\r\n\r\nHello, World!";
 
 const HandlerContext = struct {
     allocator: std.mem.Allocator,
@@ -137,8 +133,7 @@ fn clientReadCallback(ctx_opt: ?*ClientContext, loop: *xev.Loop, _: *xev.Complet
         return .disarm;
     };
 
-    // Parse request starting from current_request_start for keepalive support
-    const current_request_data = ctx.request_buffer.items[ctx.current_request_start..];
+    const current_request_data = ctx.request_buffer.items[0..];
     // TODO: use next_request_start to advance buffer for keep-alive
     var req, _ = request.parseRequest(ctx.allocator, current_request_data) catch |err| switch (err) {
         request.ParseRequestError.IncompleteRequest => {
