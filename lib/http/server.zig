@@ -71,7 +71,12 @@ const ClientContext = struct {
     read_buffer: [chunk_size]u8 = undefined,
     request_buffer: std.ArrayList(u8),
 
+    // Fields moved from HandlerContext
+    req: ?request.Request = null,
+    bytes_written: usize = 0,
+
     read_completion: xev.Completion = undefined,
+    write_completion: xev.Completion = undefined,
     shutdown_completion: xev.Completion = undefined,
     close_completion: xev.Completion = undefined,
 
@@ -80,11 +85,16 @@ const ClientContext = struct {
         ctx.request_buffer = std.ArrayList(u8).init(allocator);
         ctx.allocator = allocator;
         ctx.loop = loop;
+        ctx.req = null;
+        ctx.bytes_written = 0;
         return ctx;
     }
 
     pub fn deinit(self: *ClientContext) void {
         self.request_buffer.deinit();
+        if (self.req) |*req| {
+            req.deinit();
+        }
         self.allocator.destroy(self);
     }
 };
@@ -92,25 +102,6 @@ const ClientContext = struct {
 // TODO: move this to utils and use it
 const response = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\r\n\r\nHello, World!";
 
-const HandlerContext = struct {
-    allocator: std.mem.Allocator,
-    req: request.Request,
-    bytes_written: usize = 0,
-    write_completion: xev.Completion = undefined,
-
-    pub fn init(allocator: std.mem.Allocator, req: request.Request) !*HandlerContext {
-        const ctx = try allocator.create(HandlerContext);
-        ctx.allocator = allocator;
-        ctx.req = req;
-        ctx.bytes_written = 0;
-        return ctx;
-    }
-
-    pub fn deinit(self: *HandlerContext) void {
-        self.req.deinit();
-        self.allocator.destroy(self);
-    }
-};
 
 fn clientReadCallback(ctx_opt: ?*ClientContext, loop: *xev.Loop, _: *xev.Completion, socket: xev.TCP, read_buffer: xev.ReadBuffer, r: xev.ReadError!usize) xev.CallbackAction {
     const ctx = ctx_opt orelse return .disarm;
@@ -145,40 +136,42 @@ fn clientReadCallback(ctx_opt: ?*ClientContext, loop: *xev.Loop, _: *xev.Complet
         },
     };
 
-    // In preparation of keep-alive request handling we create a separate HandlerContext for each of the requests here
-    const handler_ctx = HandlerContext.init(ctx.allocator, req) catch {
-        req.deinit();
-        util.closeSocket(ClientContext, ctx, loop, socket);
-        return .disarm;
-    };
+    // Store the request in the client context
+    ctx.req = req;
+    ctx.bytes_written = 0;
 
     // Fork happens in the road
-    log.debug("Handling request: {s}", .{handler_ctx.req.pathname});
+    log.debug("Handling request: {s}", .{ctx.req.?.pathname});
 
     const write_buffer = response[0..@min(response.len, chunk_size)];
-    socket.write(loop, &handler_ctx.write_completion, .{ .slice = write_buffer }, HandlerContext, handler_ctx, handlerWriteCallback);
+    socket.write(loop, &ctx.write_completion, .{ .slice = write_buffer }, ClientContext, ctx, handlerWriteCallback);
 
     // This is only needed for keepalive connections, so we can read the next request
     return .rearm;
 }
 
 // Right now we don't close the connection after the write but wait for the client to close the connection
-fn handlerWriteCallback(handler_ctx_opt: ?*HandlerContext, loop: *xev.Loop, _: *xev.Completion, socket: xev.TCP, _: xev.WriteBuffer, r: xev.WriteError!usize) xev.CallbackAction {
-    const handler_ctx = handler_ctx_opt orelse return .disarm;
+fn handlerWriteCallback(ctx_opt: ?*ClientContext, loop: *xev.Loop, _: *xev.Completion, socket: xev.TCP, _: xev.WriteBuffer, r: xev.WriteError!usize) xev.CallbackAction {
+    const ctx = ctx_opt orelse return .disarm;
     const bytes_written = r catch {
-        handler_ctx.deinit();
+        util.closeSocket(ClientContext, ctx, loop, socket);
         return .disarm;
     };
 
-    handler_ctx.bytes_written += bytes_written;
-    if (handler_ctx.bytes_written >= response.len) {
-        handler_ctx.deinit();
+    ctx.bytes_written += bytes_written;
+    if (ctx.bytes_written >= response.len) {
+        // Reset for potential keep-alive
+        ctx.bytes_written = 0;
+        if (ctx.req) |*req| {
+            req.deinit();
+            ctx.req = null;
+        }
         return .disarm;
     }
-    const from = handler_ctx.bytes_written;
-    const to = @min(handler_ctx.bytes_written + chunk_size, response.len);
+    const from = ctx.bytes_written;
+    const to = @min(ctx.bytes_written + chunk_size, response.len);
     const write_buffer = response[from..to];
-    socket.write(loop, &handler_ctx.write_completion, .{ .slice = write_buffer }, HandlerContext, handler_ctx, handlerWriteCallback);
+    socket.write(loop, &ctx.write_completion, .{ .slice = write_buffer }, ClientContext, ctx, handlerWriteCallback);
 
     return .disarm;
 }
